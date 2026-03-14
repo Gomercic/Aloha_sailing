@@ -20,12 +20,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +42,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
@@ -64,11 +69,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -158,6 +165,9 @@ fun StartLineScreen() {
     var previewTrackName by remember { mutableStateOf<String?>(null) }
     var previewTrackPoints by remember { mutableStateOf<List<RaceTrackPoint>>(emptyList()) }
     var previewRaceStartEpochMillis by remember { mutableStateOf<Long?>(null) }
+    var previewLeftBuoy by remember { mutableStateOf<Point2D?>(null) }
+    var previewRightBuoy by remember { mutableStateOf<Point2D?>(null) }
+    var previewRaceStartPoint by remember { mutableStateOf<Point2D?>(null) }
     var previewTrackRenderMode by rememberSaveable { mutableStateOf(TrackPreviewRenderMode.TrackOnly) }
     var raceStartEpochMillis by remember { mutableStateOf<Long?>(null) }
     var raceStartLat by remember { mutableStateOf<Double?>(null) }
@@ -305,6 +315,14 @@ fun StartLineScreen() {
             }
         }
     }
+    val signedBowDistanceToLineMeters = remember(bowDistanceToLineMeters, gpsDistanceToLineInfo) {
+        if (bowDistanceToLineMeters == null || gpsDistanceToLineInfo == null) {
+            null
+        } else {
+            val sign = if (gpsDistanceToLineInfo.signedDistanceMeters < 0.0) -1.0 else 1.0
+            sign * bowDistanceToLineMeters
+        }
+    }
 
     val approachSpeedKnots = remember(averageMotion, averageGpsHeadingDeg, gpsDistanceToLineInfo) {
         if (averageMotion == null || averageGpsHeadingDeg == null || gpsDistanceToLineInfo == null) {
@@ -350,6 +368,21 @@ fun StartLineScreen() {
         etaDeltaSeconds < 0 -> Color(0xFFFFCDD2) // prerano/prebrzo -> svijetlo crveno
         else -> Color(0xFFE0E0E0)
     }
+    val negativeDistanceBlink = rememberInfiniteTransition(label = "negative_distance_blink")
+    val blinkPhase by negativeDistanceBlink.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 450),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "negative_distance_phase"
+    )
+    val distanceBoxColor = if ((signedBowDistanceToLineMeters ?: 0.0) < 0.0) {
+        lerp(Color(0xFFB71C1C), Color(0xFFFF8A80), blinkPhase)
+    } else {
+        timingColor
+    }
 
     val onDoubleClickAction = rememberDoubleClickAction(timeoutMs = doubleClickTimeoutMs)
     val settingsScrollState = rememberScrollState()
@@ -368,10 +401,30 @@ fun StartLineScreen() {
             emptyList()
         }
     }
+    val trackLogDistanceByPath = remember(trackLogFiles) {
+        trackLogFiles.associate { file ->
+            file.absolutePath to parseTrackDistanceMeters(file)
+        }
+    }
     val windAnalyzer = remember { ShiftWindAnalyzer() }
     val windShiftSeries = remember { mutableStateOf<List<DeviationPoint>>(emptyList()) }
-    var windShiftWindowMinutes by rememberSaveable { mutableLongStateOf(60L) }
+    var windShiftWindowMinutes by rememberSaveable {
+        mutableLongStateOf(DEFAULT_WIND_SHIFT_WINDOW_MINUTES)
+    }
+    var windShiftWindowInput by rememberSaveable {
+        mutableStateOf(DEFAULT_WIND_SHIFT_WINDOW_MINUTES.toString())
+    }
+    var windShiftWindowError by rememberSaveable { mutableStateOf<String?>(null) }
     var windShiftTrackOrientation by rememberSaveable { mutableStateOf(WindShiftTrackOrientation.NorthUp) }
+    val applyWindShiftWindowMinutes: (Long) -> Unit = { rawValue ->
+        val sanitized = rawValue.coerceIn(
+            MIN_WIND_SHIFT_WINDOW_MINUTES,
+            MAX_WIND_SHIFT_WINDOW_MINUTES
+        )
+        windShiftWindowMinutes = sanitized
+        windShiftWindowInput = sanitized.toString()
+        windShiftWindowError = null
+    }
     LaunchedEffect(gpsSamples, windShiftWindowMinutes) {
         windAnalyzer.historyWindowMinutes = windShiftWindowMinutes
         val cogSamples = gpsSamplesToCogSamples(gpsSamples)
@@ -411,7 +464,7 @@ fun StartLineScreen() {
             }
             val originalKeepScreenOn = window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
 
-            if (currentScreen == AppScreen.Main) {
+            if (currentScreen == AppScreen.Main || currentScreen == AppScreen.WindShift) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 val updated = WindowManager.LayoutParams().apply {
                     copyFrom(window.attributes)
@@ -501,27 +554,7 @@ fun StartLineScreen() {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(16.dp)
-                    .pointerInput(currentScreen) {
-                        var horizontalDrag = 0f
-                        detectHorizontalDragGestures(
-                            onHorizontalDrag = { change, dragAmount ->
-                                horizontalDrag += dragAmount
-                            },
-                            onDragEnd = {
-                                val swipeThreshold = 80f
-                                if (currentScreen == AppScreen.Main && horizontalDrag < -swipeThreshold) {
-                                    currentScreen = AppScreen.WindShift
-                                } else if (currentScreen == AppScreen.WindShift && kotlin.math.abs(horizontalDrag) > swipeThreshold) {
-                                    currentScreen = AppScreen.Main
-                                }
-                                horizontalDrag = 0f
-                            },
-                            onDragCancel = {
-                                horizontalDrag = 0f
-                            }
-                        )
-                    },
+                    .padding(16.dp),
                 verticalArrangement = Arrangement.Top
             ) {
                 if (currentScreen == AppScreen.TrackPreview) {
@@ -529,6 +562,9 @@ fun StartLineScreen() {
                         trackName = previewTrackName ?: "Track",
                         trackPoints = previewTrackPoints,
                         raceStartEpochMillis = previewRaceStartEpochMillis,
+                        leftBuoy = previewLeftBuoy,
+                        rightBuoy = previewRightBuoy,
+                        raceStartPoint = previewRaceStartPoint,
                         renderMode = previewTrackRenderMode,
                         onToggleRenderMode = {
                             previewTrackRenderMode =
@@ -559,10 +595,26 @@ fun StartLineScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = screenTitle,
-                            style = MaterialTheme.typography.headlineMedium
-                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .pointerInput(currentScreen) {
+                                    detectTapGestures(
+                                        onDoubleTap = {
+                                            if (currentScreen == AppScreen.Main) {
+                                                currentScreen = AppScreen.WindShift
+                                            } else if (currentScreen == AppScreen.WindShift) {
+                                                currentScreen = AppScreen.Main
+                                            }
+                                        }
+                                    )
+                                }
+                        ) {
+                            Text(
+                                text = screenTitle,
+                                style = MaterialTheme.typography.headlineMedium
+                            )
+                        }
                         Box {
                             IconButton(onClick = { menuExpanded = true }) {
                                 Text("☰")
@@ -666,7 +718,7 @@ fun StartLineScreen() {
                                             } else {
                                                 windShiftWindowMinutes - 3L
                                             }
-                                            windShiftWindowMinutes = updated.coerceIn(10L, 180L)
+                                            applyWindShiftWindowMinutes(updated)
                                         }
                                     )
                                 },
@@ -678,6 +730,9 @@ fun StartLineScreen() {
                                 historyMinutes = trackHistoryMinutes,
                                 orientation = windShiftTrackOrientation,
                                 referenceCourseDeg = windShiftReferenceCourseDeg,
+                                onResetActiveWindow = {
+                                    applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES)
+                                },
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
@@ -712,7 +767,10 @@ fun StartLineScreen() {
                                                 fontWeight = FontWeight.Bold
                                             )
                                             Text(
-                                                text = formatTrackMeta(trackFile),
+                                                text = formatTrackMeta(
+                                                    trackFile = trackFile,
+                                                    distanceMeters = trackLogDistanceByPath[trackFile.absolutePath]
+                                                ),
                                                 style = MaterialTheme.typography.bodySmall
                                             )
                                         }
@@ -728,6 +786,9 @@ fun StartLineScreen() {
                                                 previewTrackName = trackFile.name
                                                 previewTrackPoints = parsed.points
                                                 previewRaceStartEpochMillis = parsed.raceStartEpochMillis
+                                                previewLeftBuoy = parsed.leftBuoy
+                                                previewRightBuoy = parsed.rightBuoy
+                                                previewRaceStartPoint = parsed.raceStartPoint
                                                 previewTrackRenderMode = TrackPreviewRenderMode.TrackOnly
                                                 trackExportStatus = "Loaded track: ${trackFile.name}"
                                                 currentScreen = AppScreen.TrackPreview
@@ -1034,6 +1095,60 @@ fun StartLineScreen() {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(countdownStartError!!)
                         }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("WindShift prozor (min)")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = windShiftWindowInput,
+                                onValueChange = { input ->
+                                    val sanitized = input.filter { it.isDigit() }
+                                    windShiftWindowInput = sanitized
+                                    val parsed = sanitized.toLongOrNull()
+                                    when {
+                                        sanitized.isBlank() -> {
+                                            windShiftWindowError = "Unesi minute za WindShift."
+                                        }
+
+                                        parsed == null -> {
+                                            windShiftWindowError = "Vrijednost nije valjana."
+                                        }
+
+                                        parsed < MIN_WIND_SHIFT_WINDOW_MINUTES -> {
+                                            windShiftWindowError =
+                                                "Minimum je $MIN_WIND_SHIFT_WINDOW_MINUTES min."
+                                        }
+
+                                        parsed > MAX_WIND_SHIFT_WINDOW_MINUTES -> {
+                                            windShiftWindowError =
+                                                "Maksimum je $MAX_WIND_SHIFT_WINDOW_MINUTES min."
+                                        }
+
+                                        else -> {
+                                            applyWindShiftWindowMinutes(parsed)
+                                        }
+                                    }
+                                },
+                                label = { Text("WindShift (min)") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.width(180.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES)
+                                }
+                            ) {
+                                Text("Reset")
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Trenutno: ${windShiftWindowMinutes} min")
+                        if (windShiftWindowError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(windShiftWindowError!!)
+                        }
                         Spacer(modifier = Modifier.height(120.dp))
                     }
                     return@Column
@@ -1316,13 +1431,13 @@ fun StartLineScreen() {
         ) {
             Surface(
                 modifier = Modifier.size(90.dp),
-                color = timingColor,
+                color = distanceBoxColor,
                 tonalElevation = 2.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = "${
-                            bowDistanceToLineMeters?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
+                            signedBowDistanceToLineMeters?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
                         } m",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
@@ -1416,7 +1531,10 @@ private const val DEFAULT_DOUBLE_CLICK_TIMEOUT_MS = 700L
 private const val DEFAULT_GPS_TO_BOW_DISTANCE_METERS = 0.0
 private const val DEFAULT_AVERAGE_WINDOW_SECONDS = 5L
 private const val DEFAULT_COUNTDOWN_START_MINUTES = 5L
-private const val MAX_GPS_SAMPLE_AGE_MS = 120_000L
+private const val DEFAULT_WIND_SHIFT_WINDOW_MINUTES = 2L
+private const val MIN_WIND_SHIFT_WINDOW_MINUTES = 2L
+private const val MAX_WIND_SHIFT_WINDOW_MINUTES = 180L
+private const val MAX_GPS_SAMPLE_AGE_MS = (MAX_WIND_SHIFT_WINDOW_MINUTES + 15L) * 60_000L
 private val HIGH_CONTRAST_YELLOW = Color(0xFFFFFF99)
 
 private data class Point2D(val x: Double, val y: Double)
@@ -1429,6 +1547,7 @@ private data class RaceTrackPoint(
 private data class AverageMotion(val speedMps: Double, val headingDeg: Double?)
 private data class LineDistanceInfo(
     val distanceMeters: Double,
+    val signedDistanceMeters: Double,
     val normalTowardLine: Point2D?
 )
 
@@ -1450,6 +1569,7 @@ private fun distanceToStartLineInfo(
         val distance = lineStart.distanceTo(point).toDouble()
         return LineDistanceInfo(
             distanceMeters = distance,
+            signedDistanceMeters = distance,
             normalTowardLine = null
         )
     }
@@ -1461,6 +1581,8 @@ private fun distanceToStartLineInfo(
     val towardLineX = nearestX - p.x
     val towardLineY = nearestY - p.y
     val distance = kotlin.math.sqrt(towardLineX * towardLineX + towardLineY * towardLineY)
+    val cross = abx * apy - aby * apx
+    val signedDistance = if (cross < 0.0) -distance else distance
     val normalTowardLine = if (distance > 0.0) {
         Point2D(
             x = towardLineX / distance,
@@ -1471,6 +1593,7 @@ private fun distanceToStartLineInfo(
     }
     return LineDistanceInfo(
         distanceMeters = distance,
+        signedDistanceMeters = signedDistance,
         normalTowardLine = normalTowardLine
     )
 }
@@ -1854,6 +1977,22 @@ private fun StartLineMap(
                 }
             )
         }
+        Text(
+            text = "zoom in",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 8.dp, end = 8.dp),
+            color = Color.White,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "zoom out",
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(bottom = 8.dp, end = 8.dp),
+            color = Color.White,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -2050,10 +2189,28 @@ private fun listSavedTrackFiles(context: Context): List<File> {
     }?.sortedByDescending { it.lastModified() } ?: emptyList()
 }
 
-private fun formatTrackMeta(trackFile: File): String {
+private fun formatTrackMeta(trackFile: File, distanceMeters: Double?): String {
     val modified = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(trackFile.lastModified()))
     val sizeKb = (trackFile.length() / 1024L).coerceAtLeast(1L)
-    return "$modified  •  ${sizeKb} KB"
+    val distanceText = if (distanceMeters != null) {
+        "${String.format(Locale.US, "%.0f", distanceMeters)} m"
+    } else {
+        "-"
+    }
+    return "$modified  •  $distanceText  •  ${sizeKb} KB"
+}
+
+private fun parseTrackDistanceMeters(trackFile: File): Double? {
+    val points = runCatching { parseRaceTrackFromGpx(trackFile).points }
+        .getOrDefault(emptyList())
+    if (points.size < 2) return null
+    var totalDistance = 0.0
+    for (index in 1 until points.size) {
+        val prev = points[index - 1]
+        val curr = points[index]
+        totalDistance += distanceMeters(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
+    }
+    return totalDistance
 }
 
 private fun gpsSamplesToCogSamples(samples: List<GpsSample>): List<CogSample> {
@@ -2084,10 +2241,13 @@ private fun WindShiftDeviationGraph(
     onToggleMonoSign: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val deviationThresholdDeg = 4.0
+    val trendBarHeight = 12.dp
     val trendColor = when {
         currentDeviationDeg == null -> Color(0xFF78909C)
-        currentDeviationDeg > 0.0 -> Color(0xFF2E7D32)
-        currentDeviationDeg < 0.0 -> Color(0xFFC62828)
+        kotlin.math.abs(currentDeviationDeg) <= deviationThresholdDeg -> Color(0xFF78909C)
+        currentDeviationDeg > deviationThresholdDeg -> Color(0xFF2E7D32) // prema vjetru
+        currentDeviationDeg < -deviationThresholdDeg -> Color(0xFFC62828) // od vjetra
         else -> Color(0xFF78909C)
     }
 
@@ -2095,10 +2255,10 @@ private fun WindShiftDeviationGraph(
         modifier = modifier
             .pointerInput(isMonoMode, monoSignInverted) {
                 detectTapGestures(
-                    onTap = { tap ->
+                    onDoubleTap = { tap ->
                         if (!isMonoMode) return@detectTapGestures
-                        val inLeftTopQuarter = tap.x < size.width / 2f && tap.y < size.height / 2f
-                        if (inLeftTopQuarter) {
+                        val inLeftBottomQuarter = tap.x < size.width / 2f && tap.y >= size.height / 2f
+                        if (inLeftBottomQuarter) {
                             onToggleMonoSign()
                         }
                     }
@@ -2108,11 +2268,15 @@ private fun WindShiftDeviationGraph(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(8.dp)
+                .height(trendBarHeight)
                 .align(Alignment.TopCenter)
                 .background(trendColor)
         )
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = trendBarHeight)
+        ) {
             drawRect(Color(0xFF0E1E2F))
             val centerX = size.width / 2f
             val labelPaint = android.graphics.Paint().apply {
@@ -2134,13 +2298,13 @@ private fun WindShiftDeviationGraph(
                 drawContext.canvas.nativeCanvas.drawText(
                     activeSideLabel,
                     12f,
-                    28f,
+                    size.height - 42f,
                     labelPaint
                 )
                 drawContext.canvas.nativeCanvas.drawText(
                     tackLabel,
                     12f,
-                    52f,
+                    size.height - 16f,
                     labelPaint
                 )
             } else {
@@ -2241,6 +2405,7 @@ private fun WindShiftTrackGraph(
     historyMinutes: Long,
     orientation: WindShiftTrackOrientation,
     referenceCourseDeg: Double?,
+    onResetActiveWindow: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier) {
@@ -2319,9 +2484,10 @@ private fun WindShiftTrackGraph(
                 return if (orientation == WindShiftTrackOrientation.WindAxisUp) {
                     val dx = (point.x - latestPoint.x).toFloat() * scale
                     val dy = (point.y - latestPoint.y).toFloat() * scale
+                    val anchorY = (size.height * 0.12f).coerceAtLeast(24f)
                     Offset(
                         x = size.width / 2f + dx,
-                        y = pad - dy // latest boat point pinned near the top edge
+                        y = anchorY - dy // latest boat point pinned near the top area
                     )
                 } else {
                     val dx = (point.x - centerDataX).toFloat() * scale
@@ -2335,20 +2501,20 @@ private fun WindShiftTrackGraph(
 
             projected.zipWithNext().forEach { (a, b) ->
                 drawLine(
-                    color = Color(0xFF4A6D8A),
+                    color = Color(0xFF6D8FA8),
                     start = toOffset(a.second),
                     end = toOffset(b.second),
-                    strokeWidth = 2.5f
+                    strokeWidth = 3.8f
                 )
             }
 
             projected.zipWithNext().forEach { (a, b) ->
                 if (b.first.timestampMs >= activeStart) {
                     drawLine(
-                        color = Color(0xFF9CEBFF),
+                        color = Color(0xFFC7F5FF),
                         start = toOffset(a.second),
                         end = toOffset(b.second),
-                        strokeWidth = 6f
+                        strokeWidth = 7.2f
                     )
                 }
             }
@@ -2358,7 +2524,14 @@ private fun WindShiftTrackGraph(
             text = "${activeWindowMinutes} min",
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 8.dp),
+                .padding(end = 8.dp)
+                .pointerInput(activeWindowMinutes) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            onResetActiveWindow()
+                        }
+                    )
+                },
             color = Color.White,
             fontWeight = FontWeight.Bold
         )
@@ -2378,6 +2551,9 @@ private fun TrackPreviewScreen(
     trackName: String,
     trackPoints: List<RaceTrackPoint>,
     raceStartEpochMillis: Long?,
+    leftBuoy: Point2D?,
+    rightBuoy: Point2D?,
+    raceStartPoint: Point2D?,
     renderMode: TrackPreviewRenderMode,
     onToggleRenderMode: () -> Unit,
     onClose: () -> Unit
@@ -2385,39 +2561,62 @@ private fun TrackPreviewScreen(
     val stats = remember(trackPoints, raceStartEpochMillis) {
         computeTrackSummary(trackPoints, raceStartEpochMillis)
     }
+    var canvasUserScale by remember(trackName, trackPoints.size) { mutableFloatStateOf(1f) }
+    var canvasUserPan by remember(trackName, trackPoints.size) { mutableStateOf(Offset.Zero) }
+    val topToggleAreaHeightPx = with(LocalDensity.current) { 56.dp.toPx() }
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(renderMode, trackPoints) {
+            .pointerInput(renderMode, trackPoints, topToggleAreaHeightPx) {
                 detectTapGestures(
-                    onTap = { tap ->
-                        val inTopLeft = tap.x < size.width / 3f && tap.y < size.height / 4f
-                        if (inTopLeft) onToggleRenderMode()
-                    },
-                    onDoubleTap = {
-                        onClose()
+                    onDoubleTap = { tap ->
+                        if (tap.y > topToggleAreaHeightPx) {
+                            onClose()
+                        }
                     }
                 )
             }
     ) {
         if (renderMode == TrackPreviewRenderMode.OpenMap) {
-            TrackPreviewOpenMap(trackPoints = trackPoints, modifier = Modifier.fillMaxSize())
+            TrackPreviewOpenMap(
+                trackPoints = trackPoints,
+                leftBuoy = leftBuoy,
+                rightBuoy = rightBuoy,
+                raceStartPoint = raceStartPoint,
+                modifier = Modifier.fillMaxSize()
+            )
         } else {
-            TrackPreviewCanvasMap(trackPoints = trackPoints, modifier = Modifier.fillMaxSize())
+            TrackPreviewCanvasMap(
+                trackPoints = trackPoints,
+                leftBuoy = leftBuoy,
+                rightBuoy = rightBuoy,
+                raceStartPoint = raceStartPoint,
+                userScale = canvasUserScale,
+                userPan = canvasUserPan,
+                onTransform = { panDelta, zoomFactor ->
+                    val nextScale = (canvasUserScale * zoomFactor).coerceIn(0.5f, 12f)
+                    canvasUserScale = nextScale
+                    canvasUserPan = canvasUserPan + panDelta
+                },
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         Surface(
             modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(8.dp),
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
+                .pointerInput(renderMode) {
+                    detectTapGestures(
+                        onTap = {
+                            onToggleRenderMode()
+                        }
+                    )
+                },
             color = Color(0xAA000000)
         ) {
             Text(
-                text = if (renderMode == TrackPreviewRenderMode.TrackOnly) {
-                    "Track only"
-                } else {
-                    "OpenMap"
-                },
+                text = "OpenMap",
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                 color = Color.White,
                 fontWeight = FontWeight.Bold
@@ -2456,18 +2655,44 @@ private fun TrackPreviewScreen(
 @Composable
 private fun TrackPreviewCanvasMap(
     trackPoints: List<RaceTrackPoint>,
+    leftBuoy: Point2D?,
+    rightBuoy: Point2D?,
+    raceStartPoint: Point2D?,
+    userScale: Float,
+    userPan: Offset,
+    onTransform: (panDelta: Offset, zoomFactor: Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Canvas(modifier = modifier) {
+    Canvas(
+        modifier = modifier.pointerInput(onTransform) {
+            detectTransformGestures { _, pan, zoom, _ ->
+                onTransform(pan, zoom)
+            }
+        }
+    ) {
         drawRect(color = Color(0xFF0E1E2F))
-        if (trackPoints.size < 2) return@Canvas
+        val refLat = trackPoints.firstOrNull()?.latitude
+            ?: leftBuoy?.x
+            ?: rightBuoy?.x
+            ?: raceStartPoint?.x
+            ?: return@Canvas
 
-        val refLat = trackPoints.first().latitude
-        val projected = trackPoints.map { projectToMeters(it.latitude, it.longitude, refLat) }
-        val minX = projected.minOf { it.x }
-        val maxX = projected.maxOf { it.x }
-        val minY = projected.minOf { it.y }
-        val maxY = projected.maxOf { it.y }
+        val projectedTrack = trackPoints.map { projectToMeters(it.latitude, it.longitude, refLat) }
+        val projectedLeftBuoy = leftBuoy?.let { projectToMeters(it.x, it.y, refLat) }
+        val projectedRightBuoy = rightBuoy?.let { projectToMeters(it.x, it.y, refLat) }
+        val projectedRaceStart = raceStartPoint?.let { projectToMeters(it.x, it.y, refLat) }
+        val allProjected = buildList {
+            addAll(projectedTrack)
+            projectedLeftBuoy?.let { add(it) }
+            projectedRightBuoy?.let { add(it) }
+            projectedRaceStart?.let { add(it) }
+        }
+        if (allProjected.isEmpty()) return@Canvas
+
+        val minX = allProjected.minOf { it.x }
+        val maxX = allProjected.maxOf { it.x }
+        val minY = allProjected.minOf { it.y }
+        val maxY = allProjected.maxOf { it.y }
         val spanX = (maxX - minX).coerceAtLeast(20.0)
         val spanY = (maxY - minY).coerceAtLeast(20.0)
         val pad = 16f
@@ -2480,10 +2705,13 @@ private fun TrackPreviewCanvasMap(
         fun toOffset(point: Point2D): Offset {
             val dx = (point.x - centerDataX).toFloat() * scale
             val dy = (point.y - centerDataY).toFloat() * scale
-            return Offset(size.width / 2f + dx, size.height / 2f - dy)
+            val base = Offset(size.width / 2f + dx, size.height / 2f - dy)
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val relative = base - center
+            return center + relative * userScale + userPan
         }
 
-        projected.zipWithNext().forEach { (a, b) ->
+        projectedTrack.zipWithNext().forEach { (a, b) ->
             drawLine(
                 color = Color(0xFF9CEBFF),
                 start = toOffset(a),
@@ -2491,12 +2719,35 @@ private fun TrackPreviewCanvasMap(
                 strokeWidth = 4f
             )
         }
+        if (projectedLeftBuoy != null && projectedRightBuoy != null) {
+            drawLine(
+                color = Color(0xFFFFEB3B),
+                start = toOffset(projectedLeftBuoy),
+                end = toOffset(projectedRightBuoy),
+                strokeWidth = 5f
+            )
+        }
+
+        projectedLeftBuoy?.let {
+            drawCircle(color = Color(0xFFEF5350), radius = 13f, center = toOffset(it))
+        }
+        projectedRightBuoy?.let {
+            drawCircle(color = Color(0xFF66BB6A), radius = 13f, center = toOffset(it))
+        }
+        projectedRaceStart?.let {
+            val center = toOffset(it)
+            drawCircle(color = Color(0xFFFFD54F), radius = 12f, center = center)
+            drawCircle(color = Color.Black, radius = 12f, center = center, style = Stroke(width = 2.5f))
+        }
     }
 }
 
 @Composable
 private fun TrackPreviewOpenMap(
     trackPoints: List<RaceTrackPoint>,
+    leftBuoy: Point2D?,
+    rightBuoy: Point2D?,
+    raceStartPoint: Point2D?,
     modifier: Modifier = Modifier
 ) {
     AndroidView(
@@ -2512,16 +2763,72 @@ private fun TrackPreviewOpenMap(
         },
         update = { mapView ->
             mapView.overlays.clear()
-            if (trackPoints.isNotEmpty()) {
-                val center = trackPoints[trackPoints.size / 2]
-                mapView.controller.setCenter(GeoPoint(center.latitude, center.longitude))
+            when {
+                trackPoints.isNotEmpty() -> {
+                    val center = trackPoints[trackPoints.size / 2]
+                    mapView.controller.setCenter(GeoPoint(center.latitude, center.longitude))
+                }
+                raceStartPoint != null -> {
+                    mapView.controller.setCenter(GeoPoint(raceStartPoint.x, raceStartPoint.y))
+                }
+                leftBuoy != null -> {
+                    mapView.controller.setCenter(GeoPoint(leftBuoy.x, leftBuoy.y))
+                }
+                rightBuoy != null -> {
+                    mapView.controller.setCenter(GeoPoint(rightBuoy.x, rightBuoy.y))
+                }
             }
-            val overlay = Polyline(mapView).apply {
-                outlinePaint.color = android.graphics.Color.CYAN
-                outlinePaint.strokeWidth = 5f
-                setPoints(trackPoints.map { GeoPoint(it.latitude, it.longitude) })
+            if (trackPoints.size >= 2) {
+                val overlay = Polyline(mapView).apply {
+                    outlinePaint.color = android.graphics.Color.CYAN
+                    outlinePaint.strokeWidth = 5f
+                    setPoints(trackPoints.map { GeoPoint(it.latitude, it.longitude) })
+                }
+                mapView.overlays.add(overlay)
             }
-            mapView.overlays.add(overlay)
+            if (leftBuoy != null && rightBuoy != null) {
+                val buoyLine = Polyline(mapView).apply {
+                    outlinePaint.color = android.graphics.Color.YELLOW
+                    outlinePaint.strokeWidth = 6f
+                    setPoints(
+                        listOf(
+                            GeoPoint(leftBuoy.x, leftBuoy.y),
+                            GeoPoint(rightBuoy.x, rightBuoy.y)
+                        )
+                    )
+                }
+                mapView.overlays.add(buoyLine)
+            }
+            leftBuoy?.let { point ->
+                mapView.overlays.add(
+                    createOsmCircleOverlay(
+                        mapView = mapView,
+                        geoPoint = GeoPoint(point.x, point.y),
+                        fillColor = android.graphics.Color.argb(220, 239, 83, 80),
+                        strokeColor = android.graphics.Color.RED
+                    )
+                )
+            }
+            rightBuoy?.let { point ->
+                mapView.overlays.add(
+                    createOsmCircleOverlay(
+                        mapView = mapView,
+                        geoPoint = GeoPoint(point.x, point.y),
+                        fillColor = android.graphics.Color.argb(220, 102, 187, 106),
+                        strokeColor = android.graphics.Color.GREEN
+                    )
+                )
+            }
+            raceStartPoint?.let { point ->
+                mapView.overlays.add(
+                    createOsmCircleOverlay(
+                        mapView = mapView,
+                        geoPoint = GeoPoint(point.x, point.y),
+                        fillColor = android.graphics.Color.argb(220, 255, 213, 79),
+                        strokeColor = android.graphics.Color.BLACK
+                    )
+                )
+            }
             mapView.invalidate()
         }
     )
@@ -2614,14 +2921,15 @@ private fun parseRaceTrackFromGpx(trackFile: File): ParsedTrackData {
         val lat = match.groupValues.getOrNull(1)?.toDoubleOrNull()
         val lon = match.groupValues.getOrNull(2)?.toDoubleOrNull()
         val body = match.groupValues.getOrNull(3).orEmpty()
-        val name = nameRegex.find(body)?.groupValues?.getOrNull(1)?.trim()
-        if (name == "race_start_point" && raceStartFromWaypointTime <= 0L) {
+        val rawName = nameRegex.find(body)?.groupValues?.getOrNull(1)?.trim()
+        val canonicalName = canonicalWaypointName(rawName)
+        if (canonicalName == "race_start_point" && raceStartFromWaypointTime <= 0L) {
             raceStartFromWaypointTime = parseGpxTimeMillis(timeRegex.find(body)?.groupValues?.getOrNull(1))
         }
-        if (lat == null || lon == null || name.isNullOrBlank()) {
+        if (lat == null || lon == null || canonicalName == null) {
             null
         } else {
-            name to Point2D(lat, lon)
+            canonicalName to Point2D(lat, lon)
         }
     }.toMap()
 
@@ -2684,6 +2992,19 @@ private data class ParsedTrackData(
     val rightBuoy: Point2D?,
     val raceStartPoint: Point2D?
 )
+
+private fun canonicalWaypointName(name: String?): String? {
+    if (name.isNullOrBlank()) return null
+    val normalized = name.trim().lowercase(Locale.US)
+        .replace("-", "_")
+        .replace(" ", "_")
+    return when (normalized) {
+        "left_buoy", "leftbuoy", "port_buoy", "portbuoy", "buoy_left", "left", "port" -> "left_buoy"
+        "right_buoy", "rightbuoy", "starboard_buoy", "starboardbuoy", "buoy_right", "right", "starboard" -> "right_buoy"
+        "race_start_point", "race_start", "race_start_pos", "race_start_position", "start_point", "start_position", "startline_start", "start" -> "race_start_point"
+        else -> null
+    }
+}
 
 private fun parseExtensionDouble(gpx: String, tag: String): Double? {
     val regex = Regex("""<startline:$tag>([^<]+)</startline:$tag>""")
