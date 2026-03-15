@@ -136,7 +136,6 @@ class MainActivity : ComponentActivity() {
 fun StartLineScreen() {
     var showWelcomeScreen by rememberSaveable { mutableStateOf(!MainActivity.hasShownWelcomeForCurrentProcess) }
     var currentScreen by rememberSaveable { mutableStateOf(AppScreen.Main) }
-    var startLineLayoutMode by rememberSaveable { mutableStateOf(StartLineLayoutMode.Classic) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var screenMode by rememberSaveable { mutableStateOf(ScreenMode.Light) }
     var mapMode by rememberSaveable { mutableStateOf(MapMode.NorthUp) }
@@ -414,7 +413,6 @@ fun StartLineScreen() {
     val windDebugScrollState = rememberScrollState()
     val screenTitle = when (currentScreen) {
         AppScreen.Main -> "Start Line"
-        AppScreen.StartLinePage -> "StartLinePage"
         AppScreen.Settings -> "Settings"
         AppScreen.WindShift -> "WindShift"
         AppScreen.WindShiftDebug -> "Wind Debug"
@@ -650,11 +648,8 @@ fun StartLineScreen() {
                 }
                 return@Surface
             }
-            if (
-                currentScreen == AppScreen.StartLinePage ||
-                (currentScreen == AppScreen.Main && startLineLayoutMode == StartLineLayoutMode.LayoutPage)
-            ) {
-                StartLinePage(
+            if (currentScreen == AppScreen.Main) {
+                StartLine(
                     headerContent = {
                         AppHeader(
                             screenTitle = screenTitle,
@@ -665,7 +660,7 @@ fun StartLineScreen() {
                             onMenuExpandedChange = { menuExpanded = it },
                             onScreenSelected = { selected -> currentScreen = selected },
                             onToggleMainWindShift = {
-                                if (currentScreen == AppScreen.Main || currentScreen == AppScreen.StartLinePage) {
+                                if (currentScreen == AppScreen.Main) {
                                     currentScreen = AppScreen.WindShift
                                 } else if (currentScreen == AppScreen.WindShift) {
                                     currentScreen = AppScreen.Main
@@ -759,7 +754,7 @@ fun StartLineScreen() {
                                 leftBuoyLat = null
                                 leftBuoyLon = null
                             } else {
-                                val snapshot = currentLocation
+                                val snapshot = averagedGpsLocation
                                 if (snapshot != null) {
                                     leftBuoyLat = snapshot.latitude
                                     leftBuoyLon = snapshot.longitude
@@ -776,7 +771,7 @@ fun StartLineScreen() {
                                 rightBuoyLat = null
                                 rightBuoyLon = null
                             } else {
-                                val snapshot = currentLocation
+                                val snapshot = averagedGpsLocation
                                 if (snapshot != null) {
                                     rightBuoyLat = snapshot.latitude
                                     rightBuoyLon = snapshot.longitude
@@ -1089,19 +1084,6 @@ fun StartLineScreen() {
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text("Orijentacija: Portrait (zaključano)")
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("StartLine layout")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { startLineLayoutMode = StartLineLayoutMode.Classic }) {
-                                    Text("Classic")
-                                }
-                                Button(onClick = { startLineLayoutMode = StartLineLayoutMode.LayoutPage }) {
-                                    Text("StartLinePage")
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Trenutni layout: ${startLineLayoutMode.label}")
 
                             Spacer(modifier = Modifier.height(16.dp))
                             Text("Podloga karte")
@@ -1501,345 +1483,6 @@ fun StartLineScreen() {
                     }
                     return@Column
                 }
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            onDoubleClickAction("countdown_round") {
-                                remainingCountdownSeconds =
-                                    ((remainingCountdownSeconds + 30L) / 60L) * 60L
-                            }
-                        },
-                        contentPadding = ButtonDefaults.ButtonWithIconContentPadding
-                    ) {
-                        Text(
-                            text = formatCountdown(remainingCountdownSeconds),
-                            fontSize = 96.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Button(
-                            onClick = {
-                                onDoubleClickAction("countdown_start") {
-                                    if (remainingCountdownSeconds > 0L) {
-                                        if (isCountdownRunning) {
-                                            isCountdownRunning = false
-                                        } else {
-                                            isCountdownRunning = true
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.width(84.dp)
-                        ) {
-                            Text(
-                                text = if (isCountdownRunning) "Stop" else "Start",
-                                fontSize = 10.sp,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-
-                        Button(
-                            onClick = {
-                                onDoubleClickAction("countdown_minus") {
-                                    remainingCountdownSeconds =
-                                        (remainingCountdownSeconds - 60L).coerceAtLeast(0L)
-                                }
-                            },
-                            modifier = Modifier.width(52.dp)
-                        ) {
-                            Text("-")
-                        }
-
-                        Button(
-                            onClick = {
-                                onDoubleClickAction("countdown_plus") {
-                                    remainingCountdownSeconds += 60L
-                                }
-                            },
-                            modifier = Modifier.width(52.dp)
-                        ) {
-                            Text("+")
-                        }
-
-                        Button(
-                            onClick = {
-                                onDoubleClickAction("countdown_reset") {
-                                    isCountdownRunning = false
-                                    val exportFile = exportRaceTrackToGpx(
-                                        context = context,
-                                        points = raceTrackPoints,
-                                        raceStartEpochMillis = raceStartEpochMillis,
-                                        leftBuoyLat = leftBuoyLat,
-                                        leftBuoyLon = leftBuoyLon,
-                                        rightBuoyLat = rightBuoyLat,
-                                        rightBuoyLon = rightBuoyLon,
-                                        raceStartLat = raceStartLat,
-                                        raceStartLon = raceStartLon
-                                    )
-                                    if (raceTrackPoints.isNotEmpty() || isTrackRecording) {
-                                        trackExportStatus = if (exportFile != null) {
-                                            "GPX saved: ${exportFile.name}"
-                                        } else {
-                                            "Track not saved (need at least 2 points)"
-                                        }
-                                    }
-                                    if (exportFile != null) {
-                                        trackLogRefreshTick += 1
-                                    }
-                                    isTrackRecording = false
-                                    raceTrackPoints = emptyList()
-                                    raceStartEpochMillis = null
-                                    windShiftStartElapsedRealtimeMs = null
-                                    raceStartLat = null
-                                    raceStartLon = null
-                                    buoysLockedAfterRaceStart = false
-                                    remainingCountdownSeconds = countdownStartMinutes * 60L
-                                }
-                            },
-                            modifier = Modifier.width(84.dp)
-                        ) {
-                            Text(
-                                text = "Reset",
-                                fontSize = 10.sp,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-                    }
-                }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        HorizontalDivider(
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.onBackground
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(
-            modifier = Modifier.wrapContentWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Button(
-                onClick = {
-                    onDoubleClickAction("speed_minus") {
-                        speedKnots = (speedKnots - 0.2).coerceAtLeast(0.0)
-                    }
-                }
-            ) {
-                Text("-")
-            }
-
-            OutlinedButton(
-                onClick = {
-                    onDoubleClickAction("speed_from_gps") {
-                        if (approachSpeedKnots != null) {
-                            speedKnots = approachSpeedKnots
-                            speedStatus = "Brzina približavanja liniji (${avgWindowSeconds}s)"
-                        } else {
-                            speedStatus = "Nema podataka za brzinu približavanja liniji"
-                        }
-                    }
-                },
-                modifier = Modifier.width(88.dp)
-            ) {
-                Text(String.format(Locale.US, "%.1f kn", speedKnots))
-            }
-
-            Button(
-                onClick = {
-                    onDoubleClickAction("speed_plus") {
-                        speedKnots += 0.2
-                    }
-                }
-            ) {
-                Text("+")
-            }
-
-            OutlinedButton(
-                onClick = {},
-                enabled = false,
-                modifier = Modifier.size(70.dp),
-                contentPadding = ButtonDefaults.ButtonWithIconContentPadding
-            ) {
-                Text(
-                    text = "${averageTrueSpeedKnots?.let { String.format(Locale.US, "%.1f", it) } ?: "--"} kn",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Button(
-                onClick = {
-                    onDoubleClickAction("left_buoy") {
-                        if (buoysLockedAfterRaceStart) return@onDoubleClickAction
-                        if (leftBuoySet) {
-                            leftBuoyLat = null
-                            leftBuoyLon = null
-                        } else {
-                            val snapshot = averagedGpsLocation
-                            if (snapshot != null) {
-                                leftBuoyLat = snapshot.latitude
-                                leftBuoyLon = snapshot.longitude
-                                if (rightBuoySet) {
-                                    startTrackRecording(snapshot)
-                                }
-                            }
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(92.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (leftBuoySet) Color(0xFF2E7D32) else Color(0xFFC62828),
-                    contentColor = Color.White
-                )
-            ) {
-                Text(
-                    text = if (leftBuoySet) "✓\nL" else "Set\nL",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Text(
-                text = "${
-                    startLineLengthMeters?.let { String.format(Locale.US, "%.0f m", it) } ?: "-- m"
-                } - ${
-                    lineCrossingEtaSeconds?.let { formatDuration(it) } ?: "--:--"
-                }",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Bold
-            )
-
-            Button(
-                onClick = {
-                    onDoubleClickAction("right_buoy") {
-                        if (buoysLockedAfterRaceStart) return@onDoubleClickAction
-                        if (rightBuoySet) {
-                            rightBuoyLat = null
-                            rightBuoyLon = null
-                        } else {
-                            val snapshot = averagedGpsLocation
-                            if (snapshot != null) {
-                                rightBuoyLat = snapshot.latitude
-                                rightBuoyLon = snapshot.longitude
-                                if (leftBuoySet) {
-                                    startTrackRecording(snapshot)
-                                }
-                            }
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(92.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (rightBuoySet) Color(0xFF2E7D32) else Color(0xFFC62828),
-                    contentColor = Color.White
-                )
-            ) {
-                Text(
-                    text = if (rightBuoySet) "✓\nR" else "Set\nR",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = Color.Transparent,
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(6.dp, statusFrameColor)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "${
-                        signedBowDistanceToLineMeters?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
-                    } m",
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "${etaDeltaSeconds?.let { String.format(Locale.US, "%+d", it) } ?: "--"} sec",
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        trackExportStatus?.let { status ->
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = status,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) {
-            StartLineMap(
-                leftBuoyLocation = leftBuoyLocation,
-                rightBuoyLocation = rightBuoyLocation,
-                currentLocation = currentLocation,
-                raceTrackPoints = raceTrackPoints,
-                averageGpsHeadingDeg = averageGpsHeadingDeg,
-                mapMode = mapMode,
-                mapRenderMode = mapRenderMode,
-                mapZoom = mapZoom,
-                onToggleMapMode = {
-                    mapMode = if (mapMode == MapMode.NorthUp) {
-                        MapMode.StartLineUp
-                    } else {
-                        MapMode.NorthUp
-                    }
-                },
-                onZoomIn = {
-                    mapZoom = (mapZoom * 1.25f).coerceAtMost(6.0f)
-                },
-                onZoomOut = {
-                    mapZoom = (mapZoom / 1.25f).coerceAtLeast(0.18f)
-                }
-            )
-        }
             }
         }
     }
@@ -2088,8 +1731,7 @@ private fun AppHeader(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (
                     currentScreen == AppScreen.Main ||
-                    currentScreen == AppScreen.WindShift ||
-                    currentScreen == AppScreen.StartLinePage
+                    currentScreen == AppScreen.WindShift
                 ) {
                     val speedLabel = averageTrueSpeedKnots?.let {
                         String.format(Locale.US, "%.1f kn", it)
@@ -2124,9 +1766,9 @@ private fun AppHeader(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("StartLinePage") },
+                            text = { Text("WindShift") },
                             onClick = {
-                                onScreenSelected(AppScreen.StartLinePage)
+                                onScreenSelected(AppScreen.WindShift)
                                 onMenuExpandedChange(false)
                             }
                         )
@@ -2134,13 +1776,6 @@ private fun AppHeader(
                             text = { Text("Settings") },
                             onClick = {
                                 onScreenSelected(AppScreen.Settings)
-                                onMenuExpandedChange(false)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("WindShift") },
-                            onClick = {
-                                onScreenSelected(AppScreen.WindShift)
                                 onMenuExpandedChange(false)
                             }
                         )
@@ -2167,7 +1802,6 @@ private fun AppHeader(
 
 private enum class AppScreen {
     Main,
-    StartLinePage,
     Settings,
     WindShift,
     WindShiftDebug,
@@ -2198,11 +1832,6 @@ private enum class WindShiftTrackOrientation {
 private enum class TrackPreviewRenderMode {
     TrackOnly,
     OpenMap
-}
-
-private enum class StartLineLayoutMode(val label: String) {
-    Classic("Classic"),
-    LayoutPage("StartLinePage")
 }
 
 private enum class WindShiftStdFilterMode(val label: String, val sigmaMultiplier: Double?) {
