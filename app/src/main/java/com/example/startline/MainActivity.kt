@@ -32,12 +32,14 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -671,6 +673,18 @@ fun StartLineScreen() {
                     },
                     countdownDisplayText = formatCountdown(remainingCountdownSeconds),
                     isCountdownRunning = isCountdownRunning,
+                    speedDisplayText = String.format(Locale.US, "%.1f kn", speedKnots),
+                    leftBuoySet = leftBuoySet,
+                    rightBuoySet = rightBuoySet,
+                    lineLengthDisplayText = startLineLengthMeters?.let {
+                        String.format(Locale.US, "%.0f m", it)
+                    } ?: "-- m",
+                    lineEtaDisplayText = lineCrossingEtaSeconds?.let { formatDuration(it) } ?: "--:--",
+                    distanceDisplayText = "${
+                        signedBowDistanceToLineMeters?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
+                    } m",
+                    etaDeltaDisplayText = "${etaDeltaSeconds?.let { String.format(Locale.US, "%+d", it) } ?: "--"} sec",
+                    statusFrameColor = statusFrameColor,
                     onDoubleClickAction = onDoubleClickAction,
                     onCountdownRound = {
                         remainingCountdownSeconds =
@@ -719,6 +733,79 @@ fun StartLineScreen() {
                         raceStartLon = null
                         buoysLockedAfterRaceStart = false
                         remainingCountdownSeconds = countdownStartMinutes * 60L
+                    },
+                    onSpeedMinus = {
+                        speedKnots = (speedKnots - 0.2).coerceAtLeast(0.0)
+                    },
+                    onSpeedFromGps = {
+                        if (approachSpeedKnots != null) {
+                            speedKnots = approachSpeedKnots
+                            speedStatus = "Brzina približavanja liniji (${avgWindowSeconds}s)"
+                        } else {
+                            speedStatus = "Nema podataka za brzinu približavanja liniji"
+                        }
+                    },
+                    onSpeedPlus = {
+                        speedKnots += 0.2
+                    },
+                    onLeftBuoyToggle = {
+                        if (!buoysLockedAfterRaceStart) {
+                            if (leftBuoySet) {
+                                leftBuoyLat = null
+                                leftBuoyLon = null
+                            } else {
+                                val snapshot = currentLocation
+                                if (snapshot != null) {
+                                    leftBuoyLat = snapshot.latitude
+                                    leftBuoyLon = snapshot.longitude
+                                    if (rightBuoySet) {
+                                        startTrackRecording(snapshot)
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    onRightBuoyToggle = {
+                        if (!buoysLockedAfterRaceStart) {
+                            if (rightBuoySet) {
+                                rightBuoyLat = null
+                                rightBuoyLon = null
+                            } else {
+                                val snapshot = currentLocation
+                                if (snapshot != null) {
+                                    rightBuoyLat = snapshot.latitude
+                                    rightBuoyLon = snapshot.longitude
+                                    if (leftBuoySet) {
+                                        startTrackRecording(snapshot)
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    mapContent = {
+                        StartLineMap(
+                            leftBuoyLocation = leftBuoyLocation,
+                            rightBuoyLocation = rightBuoyLocation,
+                            currentLocation = currentLocation,
+                            raceTrackPoints = raceTrackPoints,
+                            averageGpsHeadingDeg = averageGpsHeadingDeg,
+                            mapMode = mapMode,
+                            mapRenderMode = mapRenderMode,
+                            mapZoom = mapZoom,
+                            onToggleMapMode = {
+                                mapMode = if (mapMode == MapMode.NorthUp) {
+                                    MapMode.StartLineUp
+                                } else {
+                                    MapMode.NorthUp
+                                }
+                            },
+                            onZoomIn = {
+                                mapZoom = (mapZoom * 1.25f).coerceAtMost(6.0f)
+                            },
+                            onZoomOut = {
+                                mapZoom = (mapZoom / 1.25f).coerceAtLeast(0.18f)
+                            }
+                        )
                     }
                 )
                 return@Surface
@@ -2165,7 +2252,8 @@ private fun StartLineMap(
             } else {
                 fitScale
             }
-            val scale = lineScale * mapZoom
+            val baseScale = minOf(lineScale, fitScale)
+            val scale = baseScale * mapZoom
 
             // Keep start line anchored to a fixed screen band; do not pan by boat heading/position.
             val targetLineY = if (mapMode == MapMode.StartLineUp) {
@@ -2321,22 +2409,31 @@ private fun StartLineMap(
                 }
             )
         }
-        Text(
-            text = "zoom in",
+        BoxWithConstraints(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 8.dp, end = 8.dp),
-            color = Color.White,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = "zoom out",
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(bottom = 8.dp, end = 8.dp),
-            color = Color.White,
-            fontWeight = FontWeight.Bold
-        )
+                .fillMaxSize()
+                .padding(end = 8.dp)
+        ) {
+            val oneThird = maxHeight / 3
+            Text(
+                text = "+",
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .offset(y = -oneThird),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 22.sp
+            )
+            Text(
+                text = "-",
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .offset(y = oneThird),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 22.sp
+            )
+        }
     }
 }
 

@@ -69,12 +69,26 @@ fun StartLinePage(
     headerContent: (@Composable () -> Unit)? = null,
     countdownDisplayText: String = "10:00",
     isCountdownRunning: Boolean = false,
+    speedDisplayText: String = "10 kn",
+    leftBuoySet: Boolean = false,
+    rightBuoySet: Boolean = false,
+    lineLengthDisplayText: String = "254 m",
+    lineEtaDisplayText: String = "00:00",
+    distanceDisplayText: String = "-126 m",
+    etaDeltaDisplayText: String = "-432 sec",
+    statusFrameColor: Color = Color.Red,
     onDoubleClickAction: ((actionKey: String, onConfirmed: () -> Unit) -> Unit)? = null,
     onCountdownRound: () -> Unit = {},
     onCountdownStartStop: () -> Unit = {},
     onCountdownMinus: () -> Unit = {},
     onCountdownPlus: () -> Unit = {},
-    onCountdownReset: () -> Unit = {}
+    onCountdownReset: () -> Unit = {},
+    onSpeedMinus: () -> Unit = {},
+    onSpeedFromGps: () -> Unit = {},
+    onSpeedPlus: () -> Unit = {},
+    onLeftBuoyToggle: () -> Unit = {},
+    onRightBuoyToggle: () -> Unit = {},
+    mapContent: (@Composable () -> Unit)? = null
 ) {
     var clockDisplayText by remember {
         mutableStateOf(SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()))
@@ -243,7 +257,7 @@ fun StartLinePage(
                     Text(
                         text = "Reset\nStop REC",
                         fontSize = 8.sp,
-                        lineHeight = 8.sp,
+                        lineHeight = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -262,20 +276,38 @@ fun StartLinePage(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SmallButton("−")
-
-                Spacer(modifier = Modifier.width(CompactGapXs))
-
-                Text(
-                    text = "10 kn",
-                    color = MidGreyText,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold
+                SmallButton(
+                    text = "−",
+                    onClick = {
+                        onDoubleClickAction?.invoke("speed_minus", onSpeedMinus) ?: onSpeedMinus()
+                    }
                 )
 
                 Spacer(modifier = Modifier.width(CompactGapXs))
 
-                SmallButton("+")
+                Text(
+                    text = speedDisplayText,
+                    color = MidGreyText,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.pointerInput(onDoubleClickAction) {
+                        detectTapGestures(
+                            onTap = {
+                                onDoubleClickAction?.invoke("speed_from_gps", onSpeedFromGps)
+                                    ?: onSpeedFromGps()
+                            }
+                        )
+                    }
+                )
+
+                Spacer(modifier = Modifier.width(CompactGapXs))
+
+                SmallButton(
+                    text = "+",
+                    onClick = {
+                        onDoubleClickAction?.invoke("speed_plus", onSpeedPlus) ?: onSpeedPlus()
+                    }
+                )
             }
 
             Spacer(modifier = Modifier.height(CompactGapM))
@@ -287,11 +319,14 @@ fun StartLinePage(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 ActionButton(
-                    text = "Set L",
-                    background = RedBtn,
+                    text = if (leftBuoySet) "✓\nL" else "Set\nL",
+                    background = if (leftBuoySet) GreenBtn else RedBtn,
                     modifier = Modifier
                         .width(112.dp)
-                        .height(102.dp)
+                        .height(102.dp),
+                    onClick = {
+                        onDoubleClickAction?.invoke("left_buoy", onLeftBuoyToggle) ?: onLeftBuoyToggle()
+                    }
                 )
 
                 Spacer(modifier = Modifier.width(CompactGapS))
@@ -301,13 +336,13 @@ fun StartLinePage(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "254 m",
+                        text = lineLengthDisplayText,
                         color = MidGreyText,
                         fontSize = 30.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "00:00",
+                        text = lineEtaDisplayText,
                         color = MidGreyText,
                         fontSize = 22.sp
                     )
@@ -316,11 +351,14 @@ fun StartLinePage(
                 Spacer(modifier = Modifier.width(CompactGapS))
 
                 ActionButton(
-                    text = "Set R",
-                    background = GreenBtn,
+                    text = if (rightBuoySet) "✓\nR" else "Set\nR",
+                    background = if (rightBuoySet) GreenBtn else RedBtn,
                     modifier = Modifier
                         .width(112.dp)
-                        .height(102.dp)
+                        .height(102.dp),
+                    onClick = {
+                        onDoubleClickAction?.invoke("right_buoy", onRightBuoyToggle) ?: onRightBuoyToggle()
+                    }
                 )
             }
 
@@ -330,21 +368,21 @@ fun StartLinePage(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(4.dp, Color.Red, RoundedCornerShape(12.dp))
+                    .border(4.dp, statusFrameColor, RoundedCornerShape(12.dp))
                     .padding(vertical = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "-126 m",
+                        text = distanceDisplayText,
                         color = YellowText,
-                        fontSize = 58.sp,
+                        fontSize = 66.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "-432 sec",
+                        text = etaDeltaDisplayText,
                         color = YellowText,
-                        fontSize = 58.sp,
+                        fontSize = 66.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -356,16 +394,20 @@ fun StartLinePage(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(200.dp)
+                    .weight(1f)
                     .background(PanelBlack, RoundedCornerShape(12.dp))
                     .border(1.dp, Color.DarkGray, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "MAP AREA",
-                    color = Color.LightGray,
-                    fontSize = 18.sp
-                )
+                if (mapContent != null) {
+                    mapContent()
+                } else {
+                    Text(
+                        text = "MAP AREA",
+                        color = Color.LightGray,
+                        fontSize = 18.sp
+                    )
+                }
             }
         }
     }
