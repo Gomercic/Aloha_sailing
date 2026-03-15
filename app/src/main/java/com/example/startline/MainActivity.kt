@@ -55,7 +55,6 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalTextStyle
@@ -81,6 +80,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -647,17 +647,80 @@ fun StartLineScreen() {
                 currentScreen == AppScreen.StartLinePage ||
                 (currentScreen == AppScreen.Main && startLineLayoutMode == StartLineLayoutMode.LayoutPage)
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    StartLinePage()
-                    Button(
-                        onClick = { currentScreen = AppScreen.Settings },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(12.dp)
-                    ) {
-                        Text("Settings")
+                StartLinePage(
+                    headerContent = {
+                        AppHeader(
+                            screenTitle = screenTitle,
+                            currentScreen = currentScreen,
+                            isTrackRecording = isTrackRecording,
+                            averageTrueSpeedKnots = averageTrueSpeedKnots,
+                            menuExpanded = menuExpanded,
+                            onMenuExpandedChange = { menuExpanded = it },
+                            onScreenSelected = { selected -> currentScreen = selected },
+                            onToggleMainWindShift = {
+                                if (currentScreen == AppScreen.Main || currentScreen == AppScreen.StartLinePage) {
+                                    currentScreen = AppScreen.WindShift
+                                } else if (currentScreen == AppScreen.WindShift) {
+                                    currentScreen = AppScreen.Main
+                                }
+                            },
+                            titleColor = Color.White,
+                            speedColor = HIGH_CONTRAST_YELLOW,
+                            menuColor = Color.White
+                        )
+                    },
+                    countdownDisplayText = formatCountdown(remainingCountdownSeconds),
+                    isCountdownRunning = isCountdownRunning,
+                    onDoubleClickAction = onDoubleClickAction,
+                    onCountdownRound = {
+                        remainingCountdownSeconds =
+                            ((remainingCountdownSeconds + 30L) / 60L) * 60L
+                    },
+                    onCountdownStartStop = {
+                        if (remainingCountdownSeconds > 0L) {
+                            isCountdownRunning = !isCountdownRunning
+                        }
+                    },
+                    onCountdownMinus = {
+                        remainingCountdownSeconds =
+                            (remainingCountdownSeconds - 60L).coerceAtLeast(0L)
+                    },
+                    onCountdownPlus = {
+                        remainingCountdownSeconds += 60L
+                    },
+                    onCountdownReset = {
+                        isCountdownRunning = false
+                        val exportFile = exportRaceTrackToGpx(
+                            context = context,
+                            points = raceTrackPoints,
+                            raceStartEpochMillis = raceStartEpochMillis,
+                            leftBuoyLat = leftBuoyLat,
+                            leftBuoyLon = leftBuoyLon,
+                            rightBuoyLat = rightBuoyLat,
+                            rightBuoyLon = rightBuoyLon,
+                            raceStartLat = raceStartLat,
+                            raceStartLon = raceStartLon
+                        )
+                        if (raceTrackPoints.isNotEmpty() || isTrackRecording) {
+                            trackExportStatus = if (exportFile != null) {
+                                "GPX saved: ${exportFile.name}"
+                            } else {
+                                "Track not saved (need at least 2 points)"
+                            }
+                        }
+                        if (exportFile != null) {
+                            trackLogRefreshTick += 1
+                        }
+                        isTrackRecording = false
+                        raceTrackPoints = emptyList()
+                        raceStartEpochMillis = null
+                        windShiftStartElapsedRealtimeMs = null
+                        raceStartLat = null
+                        raceStartLon = null
+                        buoysLockedAfterRaceStart = false
+                        remainingCountdownSeconds = countdownStartMinutes * 60L
                     }
-                }
+                )
                 return@Surface
             }
             Column(
@@ -690,106 +753,22 @@ fun StartLineScreen() {
                     return@Column
                 }
 
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    if (isTrackRecording) {
-                        Text(
-                            text = "● REC",
-                            color = Color.Red,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.align(Alignment.Center)
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .pointerInput(currentScreen) {
-                                    detectTapGestures(
-                                        onTap = {
-                                            if (currentScreen == AppScreen.Main) {
-                                                currentScreen = AppScreen.WindShift
-                                            } else if (currentScreen == AppScreen.WindShift) {
-                                                currentScreen = AppScreen.Main
-                                            }
-                                        }
-                                    )
-                                }
-                        ) {
-                            Text(
-                                text = screenTitle,
-                                style = MaterialTheme.typography.headlineMedium
-                            )
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (currentScreen == AppScreen.Main || currentScreen == AppScreen.WindShift) {
-                                val speedLabel = averageTrueSpeedKnots?.let {
-                                    String.format(Locale.US, "%.1f kn", it)
-                                } ?: "--.- kn"
-                                Text(
-                                    text = speedLabel,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
-                            Box {
-                                IconButton(onClick = { menuExpanded = true }) {
-                                    Text("☰")
-                                }
-                                DropdownMenu(
-                                    expanded = menuExpanded,
-                                    onDismissRequest = { menuExpanded = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("Start Line") },
-                                        onClick = {
-                                            currentScreen = AppScreen.Main
-                                            menuExpanded = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("StartLinePage") },
-                                        onClick = {
-                                            currentScreen = AppScreen.StartLinePage
-                                            menuExpanded = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Settings") },
-                                        onClick = {
-                                            currentScreen = AppScreen.Settings
-                                            menuExpanded = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("WindShift") },
-                                        onClick = {
-                                            currentScreen = AppScreen.WindShift
-                                            menuExpanded = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Wind Debug") },
-                                        onClick = {
-                                            currentScreen = AppScreen.WindShiftDebug
-                                            menuExpanded = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Track Log") },
-                                        onClick = {
-                                            currentScreen = AppScreen.TrackLog
-                                            menuExpanded = false
-                                        }
-                                    )
-                                }
-                            }
+                AppHeader(
+                    screenTitle = screenTitle,
+                    currentScreen = currentScreen,
+                    isTrackRecording = isTrackRecording,
+                    averageTrueSpeedKnots = averageTrueSpeedKnots,
+                    menuExpanded = menuExpanded,
+                    onMenuExpandedChange = { menuExpanded = it },
+                    onScreenSelected = { selected -> currentScreen = selected },
+                    onToggleMainWindShift = {
+                        if (currentScreen == AppScreen.Main) {
+                            currentScreen = AppScreen.WindShift
+                        } else if (currentScreen == AppScreen.WindShift) {
+                            currentScreen = AppScreen.Main
                         }
                     }
-                }
+                )
 
                 Spacer(modifier = Modifier.height(24.dp))
 
@@ -1917,6 +1896,128 @@ private fun playCountdownCue(toneGenerator: ToneGenerator, remainingSeconds: Lon
 
     if (remainingSeconds % 30L == 0L) {
         toneGenerator.startTone(ToneGenerator.TONE_CDMA_HIGH_L, 300)
+    }
+}
+
+@Composable
+private fun AppHeader(
+    screenTitle: String,
+    currentScreen: AppScreen,
+    isTrackRecording: Boolean,
+    averageTrueSpeedKnots: Double?,
+    menuExpanded: Boolean,
+    onMenuExpandedChange: (Boolean) -> Unit,
+    onScreenSelected: (AppScreen) -> Unit,
+    onToggleMainWindShift: () -> Unit,
+    menuIconFontSize: TextUnit = 26.sp,
+    titleColor: Color = MaterialTheme.colorScheme.onBackground,
+    speedColor: Color = MaterialTheme.colorScheme.onBackground,
+    menuColor: Color = MaterialTheme.colorScheme.onBackground
+) {
+    Box(modifier = Modifier.fillMaxWidth()) {
+        if (isTrackRecording) {
+            Text(
+                text = "● REC",
+                color = Color.Red,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .pointerInput(currentScreen) {
+                        detectTapGestures(onTap = { onToggleMainWindShift() })
+                    }
+            ) {
+                Text(
+                    text = screenTitle,
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = titleColor
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (
+                    currentScreen == AppScreen.Main ||
+                    currentScreen == AppScreen.WindShift ||
+                    currentScreen == AppScreen.StartLinePage
+                ) {
+                    val speedLabel = averageTrueSpeedKnots?.let {
+                        String.format(Locale.US, "%.1f kn", it)
+                    } ?: "--.- kn"
+                    Text(
+                        text = speedLabel,
+                        fontWeight = FontWeight.Bold,
+                        color = speedColor
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Box {
+                    Text(
+                        text = "☰",
+                        fontSize = menuIconFontSize,
+                        color = menuColor,
+                        modifier = Modifier
+                            .padding(4.dp)
+                            .pointerInput(menuExpanded) {
+                                detectTapGestures(onTap = { onMenuExpandedChange(true) })
+                            }
+                    )
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { onMenuExpandedChange(false) }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Start Line") },
+                            onClick = {
+                                onScreenSelected(AppScreen.Main)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("StartLinePage") },
+                            onClick = {
+                                onScreenSelected(AppScreen.StartLinePage)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = {
+                                onScreenSelected(AppScreen.Settings)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("WindShift") },
+                            onClick = {
+                                onScreenSelected(AppScreen.WindShift)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Wind Debug") },
+                            onClick = {
+                                onScreenSelected(AppScreen.WindShiftDebug)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Track Log") },
+                            onClick = {
+                                onScreenSelected(AppScreen.TrackLog)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 

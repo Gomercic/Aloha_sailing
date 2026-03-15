@@ -2,6 +2,7 @@ package com.example.startline
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,11 +24,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +42,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.delay
 
 private val BgBlack = Color(0xFF000000)
 private val PanelBlack = Color(0xFF111111)
@@ -55,7 +65,27 @@ private val CompactActionButtonPadding = PaddingValues(horizontal = 8.dp, vertic
 private val CompactSmallButtonPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
 
 @Composable
-fun StartLinePage() {
+fun StartLinePage(
+    headerContent: (@Composable () -> Unit)? = null,
+    countdownDisplayText: String = "10:00",
+    isCountdownRunning: Boolean = false,
+    onDoubleClickAction: ((actionKey: String, onConfirmed: () -> Unit) -> Unit)? = null,
+    onCountdownRound: () -> Unit = {},
+    onCountdownStartStop: () -> Unit = {},
+    onCountdownMinus: () -> Unit = {},
+    onCountdownPlus: () -> Unit = {},
+    onCountdownReset: () -> Unit = {}
+) {
+    var clockDisplayText by remember {
+        mutableStateOf(SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()))
+    }
+    LaunchedEffect(Unit) {
+        val formatter = SimpleDateFormat("HH:mm:ss", Locale.US)
+        while (true) {
+            clockDisplayText = formatter.format(Date())
+            delay(1_000L)
+        }
+    }
     val view = LocalView.current
     val halfStatusBarTopPaddingPx = remember(view) {
         (ViewCompat.getRootWindowInsets(view)
@@ -74,54 +104,58 @@ fun StartLinePage() {
                 .padding(CompactPagePadding)
         ) {
 
-            // Gornji red
-            Box(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "StartLine",
-                    color = WhiteText,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.CenterStart)
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.align(Alignment.Center)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(Color.Red)
-                    )
-                    Spacer(modifier = Modifier.width(CompactGapS))
-                    Text(
-                        text = "REC",
-                        color = WhiteText,
-                        fontSize = 16.sp
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.align(Alignment.CenterEnd)
+            if (headerContent != null) {
+                headerContent()
+            } else {
+                // Gornji red (fallback for preview)
+                Box(
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "11.2 kn",
-                        color = YellowText,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.width(CompactGapS))
-                    Text(
-                        text = "≡",
+                        text = "StartLine",
                         color = WhiteText,
-                        fontSize = 52.sp
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.CenterStart)
                     )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.align(Alignment.Center)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(Color.Red)
+                        )
+                        Spacer(modifier = Modifier.width(CompactGapS))
+                        Text(
+                            text = "REC",
+                            color = WhiteText,
+                            fontSize = 16.sp
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    ) {
+                        Text(
+                            text = "11.2 kn",
+                            color = YellowText,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(CompactGapS))
+                        Text(
+                            text = "≡",
+                            color = WhiteText,
+                            fontSize = 52.sp
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(CompactGapM))
+            Spacer(modifier = Modifier.height(2.dp))
 
             // Timer red
             Row(
@@ -129,20 +163,40 @@ fun StartLinePage() {
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SmallButton("−")
-
-                Spacer(modifier = Modifier.width(CompactGapM))
-
-                Text(
-                    text = "10:00",
-                    color = YellowText,
-                    fontSize = 90.sp,
-                    fontWeight = FontWeight.Bold
+                SmallButton(
+                    text = "−",
+                    onClick = {
+                        onDoubleClickAction?.invoke("countdown_minus", onCountdownMinus)
+                            ?: onCountdownMinus()
+                    }
                 )
 
                 Spacer(modifier = Modifier.width(CompactGapM))
 
-                SmallButton("+")
+                Text(
+                    text = countdownDisplayText,
+                    color = YellowText,
+                    fontSize = 90.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.pointerInput(onDoubleClickAction) {
+                        detectTapGestures(
+                            onTap = {
+                                onDoubleClickAction?.invoke("countdown_round", onCountdownRound)
+                                    ?: onCountdownRound()
+                            }
+                        )
+                    }
+                )
+
+                Spacer(modifier = Modifier.width(CompactGapM))
+
+                SmallButton(
+                    text = "+",
+                    onClick = {
+                        onDoubleClickAction?.invoke("countdown_plus", onCountdownPlus)
+                            ?: onCountdownPlus()
+                    }
+                )
             }
 
             Spacer(modifier = Modifier.height(CompactGapXs))
@@ -155,19 +209,26 @@ fun StartLinePage() {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "21:35:30",
+                    text = clockDisplayText,
                     color = MidGreyText,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.align(Alignment.CenterStart)
                 )
                 ActionButton(
-                    text = "Start",
-                    background = GreenBtn
+                    text = if (isCountdownRunning) "Stop" else "Start",
+                    background = GreenBtn,
+                    onClick = {
+                        onDoubleClickAction?.invoke("countdown_start", onCountdownStartStop)
+                            ?: onCountdownStartStop()
+                    }
                 )
 
                 Button(
-                    onClick = { },
+                    onClick = {
+                        onDoubleClickAction?.invoke("countdown_reset", onCountdownReset)
+                            ?: onCountdownReset()
+                    },
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .height(56.dp)
@@ -350,13 +411,37 @@ fun SmallButton(text: String) {
 }
 
 @Composable
+fun SmallButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier.width(40.dp),
+        contentPadding = CompactSmallButtonPadding,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = GreyBtn,
+            contentColor = WhiteText
+        ),
+        shape = RoundedCornerShape(CompactButtonCorner)
+    ) {
+        Text(
+            text = text,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
 fun ActionButton(
     text: String,
     background: Color,
-    modifier: Modifier = Modifier.height(56.dp)
+    modifier: Modifier = Modifier.height(56.dp),
+    onClick: () -> Unit = {}
 ) {
     Button(
-        onClick = { },
+        onClick = onClick,
         modifier = modifier,
         contentPadding = CompactActionButtonPadding,
         colors = ButtonDefaults.buttonColors(
