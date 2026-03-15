@@ -79,6 +79,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -87,6 +88,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -625,7 +628,7 @@ fun StartLineScreen() {
             color = MaterialTheme.colorScheme.background
         ) {
             if (showWelcomeScreen) {
-                Box(
+                Surface(
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
@@ -635,16 +638,19 @@ fun StartLineScreen() {
                                     MainActivity.hasShownWelcomeForCurrentProcess = true
                                 }
                             )
-                        }
+                        },
+                    color = Color.White
                 ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.welcome_aloha),
-                        contentDescription = "Welcome",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize(0.6f)
-                            .align(Alignment.Center)
-                    )
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Image(
+                            painter = painterResource(id = R.drawable.welcome_aloha),
+                            contentDescription = "Welcome",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize(0.72f)
+                                .align(Alignment.Center)
+                        )
+                    }
                 }
                 return@Surface
             }
@@ -810,10 +816,20 @@ fun StartLineScreen() {
                 )
                 return@Surface
             }
+            val isWindShiftScreen = currentScreen == AppScreen.WindShift
+            val view = LocalView.current
+            val halfStatusBarTopPaddingPx = remember(view) {
+                (ViewCompat.getRootWindowInsets(view)
+                    ?.getInsets(WindowInsetsCompat.Type.statusBars())
+                    ?.top ?: 0) / 2f
+            }
+            val halfStatusBarTopPadding = LocalDensity.current.run { halfStatusBarTopPaddingPx.toDp() }
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(16.dp),
+                    .background(if (isWindShiftScreen) Color.Black else Color.Transparent)
+                    .padding(top = if (isWindShiftScreen) halfStatusBarTopPadding else 0.dp)
+                    .padding(if (isWindShiftScreen) 6.dp else 16.dp),
                 verticalArrangement = Arrangement.Top
             ) {
                 if (currentScreen == AppScreen.TrackPreview) {
@@ -854,10 +870,13 @@ fun StartLineScreen() {
                         } else if (currentScreen == AppScreen.WindShift) {
                             currentScreen = AppScreen.Main
                         }
-                    }
+                    },
+                    titleColor = if (isWindShiftScreen) Color.White else MaterialTheme.colorScheme.onBackground,
+                    speedColor = if (isWindShiftScreen) HIGH_CONTRAST_YELLOW else MaterialTheme.colorScheme.onBackground,
+                    menuColor = if (isWindShiftScreen) Color.White else MaterialTheme.colorScheme.onBackground
                 )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(if (isWindShiftScreen) 0.dp else 24.dp))
 
                 if (currentScreen == AppScreen.WindShift) {
                     val trackHistoryMinutes = max(90L, windShiftWindowMinutes + 15L)
@@ -877,7 +896,10 @@ fun StartLineScreen() {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
-                            tonalElevation = 2.dp
+                            color = Color(0xFF111111),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF4A4A4A)),
+                            tonalElevation = 0.dp
                         ) {
                             WindShiftDeviationGraph(
                                 points = windShiftSeries.value,
@@ -900,7 +922,9 @@ fun StartLineScreen() {
                                         windShiftSeries.value = windAnalyzer.series
                                     }
                                 },
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(2.dp)
                             )
                         }
                         Surface(
@@ -933,7 +957,10 @@ fun StartLineScreen() {
                                         }
                                     )
                                 },
-                            tonalElevation = 2.dp
+                            color = Color(0xFF111111),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF4A4A4A)),
+                            tonalElevation = 0.dp
                         ) {
                             WindShiftTrackGraph(
                                 samples = gpsSamples,
@@ -944,7 +971,9 @@ fun StartLineScreen() {
                                 onResetActiveWindow = {
                                     applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES)
                                 },
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(2.dp)
                             )
                         }
                     }
@@ -2454,6 +2483,7 @@ private fun WindShiftDeviationGraph(
 ) {
     val deviationThresholdDeg = 4.0
     val trendBarHeight = 12.dp
+    val textScale = 1.5f
     val trendColor = when {
         currentDeviationDeg == null -> Color(0xFF78909C)
         kotlin.math.abs(currentDeviationDeg) <= deviationThresholdDeg -> Color(0xFF78909C)
@@ -2501,15 +2531,15 @@ private fun WindShiftDeviationGraph(
         ) {
             drawRect(Color(0xFF0E1E2F))
             val centerX = size.width / 2f
-            val rightLabelX = size.width - 28f
+            val rightLabelX = size.width - (28f * textScale)
             val labelPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.WHITE
-                textSize = 24f
+                textSize = 24f * textScale
                 isFakeBoldText = true
             }
             val controlsPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.WHITE
-                textSize = 40f
+                textSize = 40f * textScale
                 isFakeBoldText = true
                 textAlign = android.graphics.Paint.Align.CENTER
             }
@@ -2520,9 +2550,9 @@ private fun WindShiftDeviationGraph(
                 end = Offset(centerX, size.height),
                 strokeWidth = 2f
             )
-            drawContext.canvas.nativeCanvas.drawText("-40°", 12f, 56f, labelPaint)
-            drawContext.canvas.nativeCanvas.drawText("0°", centerX - 14f, 56f, labelPaint)
-            drawContext.canvas.nativeCanvas.drawText("+40°", size.width - 86f, 56f, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText("-40°", 12f, 56f * textScale, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText("0°", centerX - (14f * textScale), 56f * textScale, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText("+40°", size.width - (86f * textScale), 56f * textScale, labelPaint)
             drawContext.canvas.nativeCanvas.drawText("+", rightLabelX, size.height * 0.25f, controlsPaint)
             drawContext.canvas.nativeCanvas.drawText("-", rightLabelX, size.height * 0.75f, controlsPaint)
 
@@ -2532,38 +2562,26 @@ private fun WindShiftDeviationGraph(
                 drawContext.canvas.nativeCanvas.drawText(
                     activeSideLabel,
                     12f,
-                    size.height - 42f,
+                    size.height - (42f * textScale),
                     labelPaint
                 )
                 drawContext.canvas.nativeCanvas.drawText(
                     tackLabel,
                     12f,
-                    size.height - 16f,
+                    size.height - (16f * textScale),
                     labelPaint
                 )
             }
             drawContext.canvas.nativeCanvas.drawText(
                 modeLabel,
                 12f,
-                28f,
-                labelPaint
-            )
-            drawContext.canvas.nativeCanvas.drawText(
-                calcIntervalLabel,
-                12f,
-                54f,
-                labelPaint
-            )
-            drawContext.canvas.nativeCanvas.drawText(
-                availableDataLabel,
-                12f,
-                80f,
+                28f * textScale,
                 labelPaint
             )
             val windowMs = (graphWindowMinutes * 60_000L).toDouble()
             val timePaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.LTGRAY
-                textSize = 22f
+                textSize = 22f * textScale
                 isFakeBoldText = false
             }
             repeat(6) { index ->
@@ -2577,8 +2595,8 @@ private fun WindShiftDeviationGraph(
                 }
                 drawContext.canvas.nativeCanvas.drawText(
                     label,
-                    centerX + 10f,
-                    y + 8f,
+                    centerX + (10f * textScale),
+                    y + (8f * textScale),
                     timePaint
                 )
             }
@@ -2588,7 +2606,7 @@ private fun WindShiftDeviationGraph(
                     "Nema dovoljno podataka za graf",
                     20f,
                     size.height / 2f,
-                    labelPaint.apply { textSize = 30f }
+                    labelPaint.apply { textSize = 30f * textScale }
                 )
                 return@Canvas
             }
@@ -2602,7 +2620,7 @@ private fun WindShiftDeviationGraph(
                     "Nema dovoljno podataka za ${graphWindowMinutes} min",
                     20f,
                     size.height / 2f,
-                    labelPaint.apply { textSize = 30f }
+                    labelPaint.apply { textSize = 30f * textScale }
                 )
                 return@Canvas
             }
@@ -2656,8 +2674,12 @@ private fun WindShiftTrackGraph(
     onResetActiveWindow: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Box(modifier = modifier) {
-        Canvas(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+    Box(
+        modifier = modifier
+            .background(Color(0xFF0E1E2F))
+            .padding(6.dp)
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(Color(0xFF0E1E2F))
             val controlsPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.WHITE
