@@ -29,6 +29,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,12 +71,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -106,6 +109,10 @@ import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.Polygon
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        var hasShownWelcomeForCurrentProcess: Boolean = false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -125,7 +132,9 @@ class MainActivity : ComponentActivity() {
 @SuppressLint("MissingPermission")
 @OptIn(ExperimentalFoundationApi::class)
 fun StartLineScreen() {
+    var showWelcomeScreen by rememberSaveable { mutableStateOf(!MainActivity.hasShownWelcomeForCurrentProcess) }
     var currentScreen by rememberSaveable { mutableStateOf(AppScreen.Main) }
+    var startLineLayoutMode by rememberSaveable { mutableStateOf(StartLineLayoutMode.Classic) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var screenMode by rememberSaveable { mutableStateOf(ScreenMode.Light) }
     var mapMode by rememberSaveable { mutableStateOf(MapMode.NorthUp) }
@@ -280,11 +289,24 @@ fun StartLineScreen() {
     }
     val averageTrueSpeedKnots = averageMotion?.speedMps?.times(METERS_PER_SECOND_TO_KNOTS)
     val averageGpsHeadingDeg = averageMotion?.headingDeg
+    val distanceReferenceLocation = remember(currentLocation, gpsSamples) {
+        when {
+            gpsSamples.size >= 3 -> {
+                val lastThree = gpsSamples.takeLast(3).map { it.location }
+                averageLocations(lastThree)
+            }
+            gpsSamples.size == 2 -> {
+                val lastTwo = gpsSamples.takeLast(2).map { it.location }
+                averageLocations(lastTwo)
+            }
+            else -> currentLocation?.let { Location(it) }
+        }
+    }
 
-    val gpsDistanceToLineInfo = remember(currentLocation, leftBuoyLocation, rightBuoyLocation) {
-        if (currentLocation != null && leftBuoyLocation != null && rightBuoyLocation != null) {
+    val gpsDistanceToLineInfo = remember(distanceReferenceLocation, leftBuoyLocation, rightBuoyLocation) {
+        if (distanceReferenceLocation != null && leftBuoyLocation != null && rightBuoyLocation != null) {
             distanceToStartLineInfo(
-                point = currentLocation!!,
+                point = distanceReferenceLocation,
                 lineStart = leftBuoyLocation!!,
                 lineEnd = rightBuoyLocation!!
             )
@@ -385,6 +407,7 @@ fun StartLineScreen() {
     val windDebugScrollState = rememberScrollState()
     val screenTitle = when (currentScreen) {
         AppScreen.Main -> "Start Line"
+        AppScreen.StartLinePage -> "StartLinePage"
         AppScreen.Settings -> "Settings"
         AppScreen.WindShift -> "WindShift"
         AppScreen.WindShiftDebug -> "Wind Debug"
@@ -424,6 +447,12 @@ fun StartLineScreen() {
         mutableLongStateOf(DEFAULT_WIND_SHIFT_GRAPH_WINDOW_MINUTES)
     }
     var windShiftTrackOrientation by rememberSaveable { mutableStateOf(WindShiftTrackOrientation.NorthUp) }
+    LaunchedEffect(showWelcomeScreen) {
+        if (!showWelcomeScreen) return@LaunchedEffect
+        delay(5_000L)
+        showWelcomeScreen = false
+        MainActivity.hasShownWelcomeForCurrentProcess = true
+    }
     val applyWindShiftWindowMinutes: (Long) -> Unit = { rawValue ->
         val sanitized = rawValue.coerceIn(
             MIN_WIND_SHIFT_WINDOW_MINUTES,
@@ -590,6 +619,47 @@ fun StartLineScreen() {
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
+            if (showWelcomeScreen) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onTap = {
+                                    showWelcomeScreen = false
+                                    MainActivity.hasShownWelcomeForCurrentProcess = true
+                                }
+                            )
+                        }
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.welcome_aloha),
+                        contentDescription = "Welcome",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize(0.6f)
+                            .align(Alignment.Center)
+                    )
+                }
+                return@Surface
+            }
+            if (
+                currentScreen == AppScreen.StartLinePage ||
+                (currentScreen == AppScreen.Main && startLineLayoutMode == StartLineLayoutMode.LayoutPage)
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    StartLinePage()
+                    Button(
+                        onClick = { currentScreen = AppScreen.Settings },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp)
+                    ) {
+                        Text("Settings")
+                    }
+                }
+                return@Surface
+            }
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -677,6 +747,13 @@ fun StartLineScreen() {
                                         text = { Text("Start Line") },
                                         onClick = {
                                             currentScreen = AppScreen.Main
+                                            menuExpanded = false
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("StartLinePage") },
+                                        onClick = {
+                                            currentScreen = AppScreen.StartLinePage
                                             menuExpanded = false
                                         }
                                     )
@@ -941,6 +1018,19 @@ fun StartLineScreen() {
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text("Orijentacija: Portrait (zaključano)")
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("StartLine layout")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { startLineLayoutMode = StartLineLayoutMode.Classic }) {
+                                    Text("Classic")
+                                }
+                                Button(onClick = { startLineLayoutMode = StartLineLayoutMode.LayoutPage }) {
+                                    Text("StartLinePage")
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Trenutni layout: ${startLineLayoutMode.label}")
 
                             Spacer(modifier = Modifier.height(16.dp))
                             Text("Podloga karte")
@@ -1655,6 +1745,16 @@ private fun locationFromCoordinates(lat: Double?, lon: Double?): Location? {
     }
 }
 
+private fun averageLocations(locations: List<Location>): Location {
+    val count = locations.size.coerceAtLeast(1)
+    val avgLat = locations.sumOf { it.latitude } / count.toDouble()
+    val avgLon = locations.sumOf { it.longitude } / count.toDouble()
+    return Location("distance_reference_avg").apply {
+        latitude = avgLat
+        longitude = avgLon
+    }
+}
+
 private const val METERS_PER_SECOND_TO_KNOTS = 1.943844
 private const val EARTH_RADIUS_METERS = 6_371_000.0
 private const val DEFAULT_DOUBLE_CLICK_TIMEOUT_MS = 700L
@@ -1822,6 +1922,7 @@ private fun playCountdownCue(toneGenerator: ToneGenerator, remainingSeconds: Lon
 
 private enum class AppScreen {
     Main,
+    StartLinePage,
     Settings,
     WindShift,
     WindShiftDebug,
@@ -1852,6 +1953,11 @@ private enum class WindShiftTrackOrientation {
 private enum class TrackPreviewRenderMode {
     TrackOnly,
     OpenMap
+}
+
+private enum class StartLineLayoutMode(val label: String) {
+    Classic("Classic"),
+    LayoutPage("StartLinePage")
 }
 
 private enum class WindShiftStdFilterMode(val label: String, val sigmaMultiplier: Double?) {
