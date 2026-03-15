@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
-import android.content.res.Configuration
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.location.Location
@@ -46,11 +45,11 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -58,11 +57,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -73,7 +74,6 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -125,15 +125,8 @@ class MainActivity : ComponentActivity() {
 @SuppressLint("MissingPermission")
 @OptIn(ExperimentalFoundationApi::class)
 fun StartLineScreen() {
-    val configuration = LocalConfiguration.current
-    val defaultOrientationMode = if (configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-        OrientationMode.Landscape
-    } else {
-        OrientationMode.Portrait
-    }
     var currentScreen by rememberSaveable { mutableStateOf(AppScreen.Main) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
-    var orientationMode by rememberSaveable { mutableStateOf(defaultOrientationMode) }
     var screenMode by rememberSaveable { mutableStateOf(ScreenMode.Light) }
     var mapMode by rememberSaveable { mutableStateOf(MapMode.NorthUp) }
     var mapRenderMode by rememberSaveable { mutableStateOf(MapRenderMode.Canvas) }
@@ -170,6 +163,7 @@ fun StartLineScreen() {
     var previewRaceStartPoint by remember { mutableStateOf<Point2D?>(null) }
     var previewTrackRenderMode by rememberSaveable { mutableStateOf(TrackPreviewRenderMode.TrackOnly) }
     var raceStartEpochMillis by remember { mutableStateOf<Long?>(null) }
+    var windShiftStartElapsedRealtimeMs by remember { mutableStateOf<Long?>(null) }
     var raceStartLat by remember { mutableStateOf<Double?>(null) }
     var raceStartLon by remember { mutableStateOf<Double?>(null) }
     var buoysLockedAfterRaceStart by remember { mutableStateOf(false) }
@@ -319,7 +313,8 @@ fun StartLineScreen() {
         if (bowDistanceToLineMeters == null || gpsDistanceToLineInfo == null) {
             null
         } else {
-            val sign = if (gpsDistanceToLineInfo.signedDistanceMeters < 0.0) -1.0 else 1.0
+            // User preference: invert start-line side sign convention in UI.
+            val sign = if (gpsDistanceToLineInfo.signedDistanceMeters < 0.0) 1.0 else -1.0
             sign * bowDistanceToLineMeters
         }
     }
@@ -362,12 +357,10 @@ fun StartLineScreen() {
             (eta - remainingCountdownSeconds.toDouble()).roundToInt()
         }
     }
-    val timingColor = when {
-        etaDeltaSeconds == null -> Color(0xFFB0BEC5)
-        etaDeltaSeconds > 0 -> Color(0xFFC8E6C9) // kasni -> svijetlo zeleno
-        etaDeltaSeconds < 0 -> Color(0xFFFFCDD2) // prerano/prebrzo -> svijetlo crveno
-        else -> Color(0xFFE0E0E0)
-    }
+    val hasDistanceAndEta = signedBowDistanceToLineMeters != null && etaDeltaSeconds != null
+    val isMetersNegative = (signedBowDistanceToLineMeters ?: 0.0) < 0.0
+    val isSecondsNegative = (etaDeltaSeconds ?: 0) < 0
+    val isBothPositive = hasDistanceAndEta && !isMetersNegative && !isSecondsNegative
     val negativeDistanceBlink = rememberInfiniteTransition(label = "negative_distance_blink")
     val blinkPhase by negativeDistanceBlink.animateFloat(
         initialValue = 0f,
@@ -378,19 +371,23 @@ fun StartLineScreen() {
         ),
         label = "negative_distance_phase"
     )
-    val distanceBoxColor = if ((signedBowDistanceToLineMeters ?: 0.0) < 0.0) {
-        lerp(Color(0xFFB71C1C), Color(0xFFFF8A80), blinkPhase)
-    } else {
-        timingColor
+    val statusFrameColor = when {
+        !hasDistanceAndEta -> Color(0xFF616161)
+        isBothPositive -> Color(0xFF2E7D32)
+        isMetersNegative -> lerp(Color(0xFFB71C1C), Color(0xFFFF8A80), blinkPhase)
+        isSecondsNegative -> Color(0xFFC62828)
+        else -> Color(0xFFC62828)
     }
 
     val onDoubleClickAction = rememberDoubleClickAction(timeoutMs = doubleClickTimeoutMs)
     val settingsScrollState = rememberScrollState()
     val trackLogScrollState = rememberScrollState()
+    val windDebugScrollState = rememberScrollState()
     val screenTitle = when (currentScreen) {
         AppScreen.Main -> "Start Line"
         AppScreen.Settings -> "Settings"
         AppScreen.WindShift -> "WindShift"
+        AppScreen.WindShiftDebug -> "Wind Debug"
         AppScreen.TrackLog -> "Track Log"
         AppScreen.TrackPreview -> "Track Preview"
     }
@@ -415,6 +412,17 @@ fun StartLineScreen() {
         mutableStateOf(DEFAULT_WIND_SHIFT_WINDOW_MINUTES.toString())
     }
     var windShiftWindowError by rememberSaveable { mutableStateOf<String?>(null) }
+    var windShiftHeadingWindowSeconds by rememberSaveable {
+        mutableLongStateOf(DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS)
+    }
+    var windShiftHeadingWindowInput by rememberSaveable {
+        mutableStateOf(DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS.toString())
+    }
+    var windShiftHeadingWindowError by rememberSaveable { mutableStateOf<String?>(null) }
+    var windShiftStdFilterMode by rememberSaveable { mutableStateOf(WindShiftStdFilterMode.OneSigma) }
+    var windShiftGraphWindowMinutes by rememberSaveable {
+        mutableLongStateOf(DEFAULT_WIND_SHIFT_GRAPH_WINDOW_MINUTES)
+    }
     var windShiftTrackOrientation by rememberSaveable { mutableStateOf(WindShiftTrackOrientation.NorthUp) }
     val applyWindShiftWindowMinutes: (Long) -> Unit = { rawValue ->
         val sanitized = rawValue.coerceIn(
@@ -425,9 +433,39 @@ fun StartLineScreen() {
         windShiftWindowInput = sanitized.toString()
         windShiftWindowError = null
     }
-    LaunchedEffect(gpsSamples, windShiftWindowMinutes) {
+    val applyWindShiftGraphWindowMinutes: (Long) -> Unit = { rawValue ->
+        windShiftGraphWindowMinutes = rawValue.coerceAtLeast(MIN_WIND_SHIFT_GRAPH_WINDOW_MINUTES)
+    }
+    val applyWindShiftHeadingWindowSeconds: (Long) -> Unit = { rawValue ->
+        val sanitized = rawValue.coerceIn(
+            MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS,
+            MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS
+        )
+        windShiftHeadingWindowSeconds = sanitized
+        windShiftHeadingWindowInput = sanitized.toString()
+        windShiftHeadingWindowError = null
+    }
+    LaunchedEffect(
+        gpsSamples,
+        windShiftWindowMinutes,
+        windShiftStartElapsedRealtimeMs,
+        windShiftHeadingWindowSeconds,
+        windShiftStdFilterMode
+    ) {
+        windShiftSeries.value = emptyList()
         windAnalyzer.historyWindowMinutes = windShiftWindowMinutes
-        val cogSamples = gpsSamplesToCogSamples(gpsSamples)
+        windAnalyzer.stdFilterSigma = windShiftStdFilterMode.sigmaMultiplier
+        val startElapsedMs = windShiftStartElapsedRealtimeMs
+        if (startElapsedMs == null) {
+            windAnalyzer.clear()
+            return@LaunchedEffect
+        }
+        val cogSamples = gpsSamplesToWindShiftCogSamples(
+            samples = gpsSamples,
+            startElapsedRealtimeMs = startElapsedMs,
+            avgSpeedWindowSeconds = windShiftHeadingWindowSeconds,
+            minAverageSpeedKnots = 1.0
+        )
         windAnalyzer.replaceSamples(cogSamples)
         windShiftSeries.value = windAnalyzer.series
     }
@@ -441,6 +479,7 @@ fun StartLineScreen() {
             )
         )
         raceStartEpochMillis = null
+        windShiftStartElapsedRealtimeMs = null
         raceStartLat = null
         raceStartLon = null
         buoysLockedAfterRaceStart = false
@@ -482,12 +521,9 @@ fun StartLineScreen() {
         }
     }
 
-    LaunchedEffect(activity, orientationMode) {
+    LaunchedEffect(activity) {
         val currentActivity = activity ?: return@LaunchedEffect
-        currentActivity.requestedOrientation = when (orientationMode) {
-            OrientationMode.Portrait -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            OrientationMode.Landscape -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        }
+        currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
     }
 
     LaunchedEffect(isCountdownRunning) {
@@ -502,6 +538,9 @@ fun StartLineScreen() {
                 )
             }
             if (remainingCountdownSeconds <= 0L) {
+                if (windShiftStartElapsedRealtimeMs == null) {
+                    windShiftStartElapsedRealtimeMs = SystemClock.elapsedRealtime()
+                }
                 if (isTrackRecording && raceStartEpochMillis == null) {
                     raceStartEpochMillis = System.currentTimeMillis()
                     raceStartLat = currentLocation?.latitude
@@ -600,7 +639,7 @@ fun StartLineScreen() {
                                 .weight(1f)
                                 .pointerInput(currentScreen) {
                                     detectTapGestures(
-                                        onDoubleTap = {
+                                        onTap = {
                                             if (currentScreen == AppScreen.Main) {
                                                 currentScreen = AppScreen.WindShift
                                             } else if (currentScreen == AppScreen.WindShift) {
@@ -615,42 +654,61 @@ fun StartLineScreen() {
                                 style = MaterialTheme.typography.headlineMedium
                             )
                         }
-                        Box {
-                            IconButton(onClick = { menuExpanded = true }) {
-                                Text("☰")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (currentScreen == AppScreen.Main || currentScreen == AppScreen.WindShift) {
+                                val speedLabel = averageTrueSpeedKnots?.let {
+                                    String.format(Locale.US, "%.1f kn", it)
+                                } ?: "--.- kn"
+                                Text(
+                                    text = speedLabel,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                             }
-                            DropdownMenu(
-                                expanded = menuExpanded,
-                                onDismissRequest = { menuExpanded = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Start Line") },
-                                    onClick = {
-                                        currentScreen = AppScreen.Main
-                                        menuExpanded = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Settings") },
-                                    onClick = {
-                                        currentScreen = AppScreen.Settings
-                                        menuExpanded = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("WindShift") },
-                                    onClick = {
-                                        currentScreen = AppScreen.WindShift
-                                        menuExpanded = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Track Log") },
-                                    onClick = {
-                                        currentScreen = AppScreen.TrackLog
-                                        menuExpanded = false
-                                    }
-                                )
+                            Box {
+                                IconButton(onClick = { menuExpanded = true }) {
+                                    Text("☰")
+                                }
+                                DropdownMenu(
+                                    expanded = menuExpanded,
+                                    onDismissRequest = { menuExpanded = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Start Line") },
+                                        onClick = {
+                                            currentScreen = AppScreen.Main
+                                            menuExpanded = false
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Settings") },
+                                        onClick = {
+                                            currentScreen = AppScreen.Settings
+                                            menuExpanded = false
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("WindShift") },
+                                        onClick = {
+                                            currentScreen = AppScreen.WindShift
+                                            menuExpanded = false
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Wind Debug") },
+                                        onClick = {
+                                            currentScreen = AppScreen.WindShiftDebug
+                                            menuExpanded = false
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Track Log") },
+                                        onClick = {
+                                            currentScreen = AppScreen.TrackLog
+                                            menuExpanded = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -683,6 +741,16 @@ fun StartLineScreen() {
                                 isMonoMode = windAnalyzer.mode == Mode.SINGLE,
                                 monoSignInverted = windAnalyzer.monoSignInverted,
                                 currentDeviationDeg = windAnalyzer.currentDeviationDeg,
+                                modeLabel = if (windAnalyzer.mode == Mode.DUAL) "DUAL MODE" else "SINGLE MODE",
+                                calcIntervalLabel = "Calc: ${windAnalyzer.debugInfo.calcWindowMinutes} min",
+                                availableDataLabel = "Data: ${formatDuration(windAnalyzer.debugInfo.availableDataMs / 1000.0)}",
+                                graphWindowMinutes = windShiftGraphWindowMinutes,
+                                onIncreaseGraphWindow = {
+                                    applyWindShiftGraphWindowMinutes(windShiftGraphWindowMinutes + 5L)
+                                },
+                                onDecreaseGraphWindow = {
+                                    applyWindShiftGraphWindowMinutes(windShiftGraphWindowMinutes - 5L)
+                                },
                                 onToggleMonoSign = {
                                     if (windAnalyzer.mode == Mode.SINGLE) {
                                         windAnalyzer.toggleMonoSign()
@@ -737,6 +805,16 @@ fun StartLineScreen() {
                             )
                         }
                     }
+                    return@Column
+                }
+                if (currentScreen == AppScreen.WindShiftDebug) {
+                    WindShiftDebugScreen(
+                        debug = windAnalyzer.debugInfo,
+                        graphWindowMinutes = windShiftGraphWindowMinutes,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(windDebugScrollState)
+                    )
                     return@Column
                 }
 
@@ -848,114 +926,107 @@ fun StartLineScreen() {
                 }
 
                 if (currentScreen == AppScreen.Settings) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(settingsScrollState)
+                    CompositionLocalProvider(
+                        LocalTextStyle provides LocalTextStyle.current.copy(fontSize = 12.sp)
                     ) {
-                        Text(
-                            text = "Settings",
-                            style = MaterialTheme.typography.headlineSmall
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("Orijentacija")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { orientationMode = OrientationMode.Portrait }) {
-                                Text("Portrait")
-                            }
-                            Button(onClick = { orientationMode = OrientationMode.Landscape }) {
-                                Text("Landscape")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${orientationMode.label}")
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Podloga karte")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { mapRenderMode = MapRenderMode.Canvas }) {
-                                Text("Canvas")
-                            }
-                            Button(onClick = { mapRenderMode = MapRenderMode.Osm }) {
-                                Text("OSM")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "Trenutna podloga: " + if (mapRenderMode == MapRenderMode.Canvas) "Canvas" else "OSM"
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Screen mode")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { screenMode = ScreenMode.Light }) {
-                                Text("Bijeli")
-                            }
-                            Button(onClick = { screenMode = ScreenMode.Dark }) {
-                                Text("Crni")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "Trenutni mode: " + if (screenMode == ScreenMode.Light) "Bijeli" else "Crni"
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Timeout za dvoklik (ms)")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(settingsScrollState)
                         ) {
-                            OutlinedTextField(
-                                value = timeoutInput,
-                                onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() }
-                                    timeoutInput = sanitized
-                                    val parsed = sanitized.toLongOrNull()
-                                    when {
-                                        sanitized.isBlank() -> {
-                                            timeoutError = "Unesi timeout u milisekundama."
-                                        }
-
-                                        parsed == null -> {
-                                            timeoutError = "Vrijednost timeout-a nije valjana."
-                                        }
-
-                                        parsed < 100L -> {
-                                            timeoutError = "Minimum je 100 ms."
-                                        }
-
-                                        else -> {
-                                            timeoutError = null
-                                            doubleClickTimeoutMs = parsed
-                                        }
-                                    }
-                                },
-                                label = { Text("Timeout (ms)") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.width(180.dp)
+                            Text(
+                                text = "Settings",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    doubleClickTimeoutMs = DEFAULT_DOUBLE_CLICK_TIMEOUT_MS
-                                    timeoutInput = DEFAULT_DOUBLE_CLICK_TIMEOUT_MS.toString()
-                                    timeoutError = null
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Orijentacija: Portrait (zaključano)")
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("Podloga karte")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { mapRenderMode = MapRenderMode.Canvas }) {
+                                    Text("Canvas")
                                 }
-                            ) {
-                                Text("Reset")
+                                Button(onClick = { mapRenderMode = MapRenderMode.Osm }) {
+                                    Text("OSM")
+                                }
                             }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutni timeout: ${doubleClickTimeoutMs} ms")
-                        if (timeoutError != null) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(timeoutError!!)
-                        }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Trenutna podloga: " + if (mapRenderMode == MapRenderMode.Canvas) "Canvas" else "OSM"
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("Screen mode")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { screenMode = ScreenMode.Light }) {
+                                    Text("Bijeli")
+                                }
+                                Button(onClick = { screenMode = ScreenMode.Dark }) {
+                                    Text("Crni")
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Trenutni mode: " + if (screenMode == ScreenMode.Light) "Bijeli" else "Crni"
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("Timeout za dvoklik (ms)")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = timeoutInput,
+                                    onValueChange = { input ->
+                                        val sanitized = input.filter { it.isDigit() }
+                                        timeoutInput = sanitized
+                                        val parsed = sanitized.toLongOrNull()
+                                        when {
+                                            sanitized.isBlank() -> {
+                                                timeoutError = "Unesi timeout u milisekundama."
+                                            }
+
+                                            parsed == null -> {
+                                                timeoutError = "Vrijednost timeout-a nije valjana."
+                                            }
+
+                                            parsed < 100L -> {
+                                                timeoutError = "Minimum je 100 ms."
+                                            }
+
+                                            else -> {
+                                                timeoutError = null
+                                                doubleClickTimeoutMs = parsed
+                                            }
+                                        }
+                                    },
+                                    label = { Text("Timeout (ms)") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.width(180.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        doubleClickTimeoutMs = DEFAULT_DOUBLE_CLICK_TIMEOUT_MS
+                                        timeoutInput = DEFAULT_DOUBLE_CLICK_TIMEOUT_MS.toString()
+                                        timeoutError = null
+                                    }
+                                ) {
+                                    Text("Reset")
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Trenutni timeout: ${doubleClickTimeoutMs} ms")
+                            if (timeoutError != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(timeoutError!!)
+                            }
 
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("Udaljenost GPS do pramca (m)")
@@ -1149,7 +1220,74 @@ fun StartLineScreen() {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(windShiftWindowError!!)
                         }
-                        Spacer(modifier = Modifier.height(120.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("WindShift smjer: razmak točaka (s)")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = windShiftHeadingWindowInput,
+                                onValueChange = { input ->
+                                    val sanitized = input.filter { it.isDigit() }
+                                    windShiftHeadingWindowInput = sanitized
+                                    val parsed = sanitized.toLongOrNull()
+                                    when {
+                                        sanitized.isBlank() -> {
+                                            windShiftHeadingWindowError = "Unesi sekunde za WindShift smjer."
+                                        }
+                                        parsed == null -> {
+                                            windShiftHeadingWindowError = "Vrijednost nije valjana."
+                                        }
+                                        parsed < MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS -> {
+                                            windShiftHeadingWindowError =
+                                                "Minimum je $MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
+                                        }
+                                        parsed > MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS -> {
+                                            windShiftHeadingWindowError =
+                                                "Maksimum je $MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
+                                        }
+                                        else -> {
+                                            applyWindShiftHeadingWindowSeconds(parsed)
+                                        }
+                                    }
+                                },
+                                label = { Text("Smjer (s)") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.width(180.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    applyWindShiftHeadingWindowSeconds(DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS)
+                                }
+                            ) {
+                                Text("Reset")
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Trenutno: ${windShiftHeadingWindowSeconds} s")
+                        if (windShiftHeadingWindowError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(windShiftHeadingWindowError!!)
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("WindShift SD filter")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { windShiftStdFilterMode = WindShiftStdFilterMode.Off }) {
+                                Text("Isključeno")
+                            }
+                            Button(onClick = { windShiftStdFilterMode = WindShiftStdFilterMode.OneSigma }) {
+                                Text(">1 SD")
+                            }
+                            Button(onClick = { windShiftStdFilterMode = WindShiftStdFilterMode.TwoSigma }) {
+                                Text(">2 SD")
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Trenutno: ${windShiftStdFilterMode.label}")
+                            Spacer(modifier = Modifier.height(120.dp))
+                        }
                     }
                     return@Column
                 }
@@ -1254,6 +1392,7 @@ fun StartLineScreen() {
                                     isTrackRecording = false
                                     raceTrackPoints = emptyList()
                                     raceStartEpochMillis = null
+                                    windShiftStartElapsedRealtimeMs = null
                                     raceStartLat = null
                                     raceStartLon = null
                                     buoysLockedAfterRaceStart = false
@@ -1362,16 +1501,16 @@ fun StartLineScreen() {
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .size(72.dp),
-                shape = CircleShape,
+                    .height(92.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (leftBuoySet) Color(0xFF2E7D32) else Color(0xFFC62828),
                     contentColor = Color.White
                 )
             ) {
                 Text(
-                    text = if (leftBuoySet) "✓" else "-",
-                    fontSize = 30.sp,
+                    text = if (leftBuoySet) "✓\nL" else "Set\nL",
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1407,16 +1546,16 @@ fun StartLineScreen() {
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .size(72.dp),
-                shape = CircleShape,
+                    .height(92.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (rightBuoySet) Color(0xFF2E7D32) else Color(0xFFC62828),
                     contentColor = Color.White
                 )
             ) {
                 Text(
-                    text = if (rightBuoySet) "✓" else "-",
-                    fontSize = 30.sp,
+                    text = if (rightBuoySet) "✓\nR" else "Set\nR",
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1424,39 +1563,30 @@ fun StartLineScreen() {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Row(
+        Surface(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically
+            color = Color.Transparent,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(6.dp, statusFrameColor)
         ) {
-            Surface(
-                modifier = Modifier.size(90.dp),
-                color = distanceBoxColor,
-                tonalElevation = 2.dp
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "${
-                            signedBowDistanceToLineMeters?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
-                        } m",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            Surface(
-                modifier = Modifier.size(90.dp),
-                color = timingColor,
-                tonalElevation = 2.dp
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "${etaDeltaSeconds?.let { String.format(Locale.US, "%+d", it) } ?: "--"} s",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                Text(
+                    text = "${
+                        signedBowDistanceToLineMeters?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
+                    } m",
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${etaDeltaSeconds?.let { String.format(Locale.US, "%+d", it) } ?: "--"} sec",
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
@@ -1534,6 +1664,11 @@ private const val DEFAULT_COUNTDOWN_START_MINUTES = 5L
 private const val DEFAULT_WIND_SHIFT_WINDOW_MINUTES = 2L
 private const val MIN_WIND_SHIFT_WINDOW_MINUTES = 2L
 private const val MAX_WIND_SHIFT_WINDOW_MINUTES = 180L
+private const val DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS = 10L
+private const val MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS = 1L
+private const val MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS = 30L
+private const val DEFAULT_WIND_SHIFT_GRAPH_WINDOW_MINUTES = 10L
+private const val MIN_WIND_SHIFT_GRAPH_WINDOW_MINUTES = 5L
 private const val MAX_GPS_SAMPLE_AGE_MS = (MAX_WIND_SHIFT_WINDOW_MINUTES + 15L) * 60_000L
 private val HIGH_CONTRAST_YELLOW = Color(0xFFFFFF99)
 
@@ -1689,6 +1824,7 @@ private enum class AppScreen {
     Main,
     Settings,
     WindShift,
+    WindShiftDebug,
     TrackLog,
     TrackPreview
 }
@@ -1696,11 +1832,6 @@ private enum class AppScreen {
 private enum class ScreenMode {
     Light,
     Dark
-}
-
-private enum class OrientationMode(val label: String) {
-    Portrait("Portrait"),
-    Landscape("Landscape")
 }
 
 private enum class MapMode {
@@ -1721,6 +1852,12 @@ private enum class WindShiftTrackOrientation {
 private enum class TrackPreviewRenderMode {
     TrackOnly,
     OpenMap
+}
+
+private enum class WindShiftStdFilterMode(val label: String, val sigmaMultiplier: Double?) {
+    Off("Isključeno", null),
+    OneSigma(">1 SD", 1.0),
+    TwoSigma(">2 SD", 2.0)
 }
 
 @Composable
@@ -2232,12 +2369,96 @@ private fun gpsSamplesToCogSamples(samples: List<GpsSample>): List<CogSample> {
     }
 }
 
+private fun gpsSamplesToWindShiftCogSamples(
+    samples: List<GpsSample>,
+    startElapsedRealtimeMs: Long,
+    avgSpeedWindowSeconds: Long,
+    minAverageSpeedKnots: Double
+): List<CogSample> {
+    if (samples.size < 2) return emptyList()
+    val sorted = samples
+        .asSequence()
+        .filter { it.timestampMs >= startElapsedRealtimeMs }
+        .sortedBy { it.timestampMs }
+        .toList()
+    if (sorted.size < 2) return emptyList()
+
+    val avgWindowMs = avgSpeedWindowSeconds.coerceAtLeast(1L) * 1_000L
+    val rawSamples = (1 until sorted.size).mapNotNull { index ->
+        val curr = sorted[index]
+        val targetTs = curr.timestampMs - avgWindowMs
+        if (targetTs < sorted.first().timestampMs) return@mapNotNull null
+
+        // Use two points separated by ~avgWindowMs (default 5s) for COG/SOG.
+        var anchorIndex = -1
+        var bestDiffMs = Long.MAX_VALUE
+        for (candidateIndex in 0 until index) {
+            val diffMs = kotlin.math.abs(sorted[candidateIndex].timestampMs - targetTs)
+            if (diffMs < bestDiffMs) {
+                bestDiffMs = diffMs
+                anchorIndex = candidateIndex
+            }
+        }
+        if (anchorIndex < 0) return@mapNotNull null
+        val anchor = sorted[anchorIndex]
+
+        val dtSeconds = (curr.timestampMs - anchor.timestampMs) / 1000.0
+        if (dtSeconds <= 0.0) return@mapNotNull null
+
+        val distanceMeters = anchor.location.distanceTo(curr.location).toDouble()
+        val avgSpeedKnots = (distanceMeters / dtSeconds) * METERS_PER_SECOND_TO_KNOTS
+        if (avgSpeedKnots < minAverageSpeedKnots) return@mapNotNull null
+
+        val cogDeg = normalizeDegrees(anchor.location.bearingTo(curr.location).toDouble())
+        CogSample(
+            timestampMs = curr.timestampMs,
+            cogDeg = cogDeg,
+            sogKnots = avgSpeedKnots
+        )
+    }
+    return aggregateWindShiftCogSamplesByStep(
+        samples = rawSamples,
+        stepSeconds = 10L,
+        minAverageSpeedKnots = minAverageSpeedKnots
+    )
+}
+
+private fun aggregateWindShiftCogSamplesByStep(
+    samples: List<CogSample>,
+    stepSeconds: Long,
+    minAverageSpeedKnots: Double
+): List<CogSample> {
+    if (samples.isEmpty()) return emptyList()
+    val bucketMs = stepSeconds.coerceAtLeast(1L) * 1_000L
+    return samples
+        .sortedBy { it.timestampMs }
+        .groupBy { it.timestampMs / bucketMs }
+        .toSortedMap()
+        .values
+        .mapNotNull { bucket ->
+            val meanCog = ShiftWindAnalyzer.circularMean(bucket.map { it.cogDeg }) ?: return@mapNotNull null
+            val meanSpeed = bucket.map { it.sogKnots }.average()
+            if (meanSpeed < minAverageSpeedKnots) return@mapNotNull null
+            CogSample(
+                timestampMs = bucket.last().timestampMs,
+                cogDeg = meanCog,
+                sogKnots = meanSpeed
+            )
+        }
+}
+
 @Composable
 private fun WindShiftDeviationGraph(
     points: List<DeviationPoint>,
     isMonoMode: Boolean,
     monoSignInverted: Boolean,
     currentDeviationDeg: Double?,
+    modeLabel: String,
+    calcIntervalLabel: String,
+    availableDataLabel: String,
+    graphWindowMinutes: Long,
+    onIncreaseGraphWindow: () -> Unit,
+    onDecreaseGraphWindow: () -> Unit,
     onToggleMonoSign: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2253,13 +2474,24 @@ private fun WindShiftDeviationGraph(
 
     Box(
         modifier = modifier
-            .pointerInput(isMonoMode, monoSignInverted) {
+            .pointerInput(isMonoMode, monoSignInverted, graphWindowMinutes) {
                 detectTapGestures(
-                    onDoubleTap = { tap ->
-                        if (!isMonoMode) return@detectTapGestures
-                        val inLeftBottomQuarter = tap.x < size.width / 2f && tap.y >= size.height / 2f
-                        if (inLeftBottomQuarter) {
-                            onToggleMonoSign()
+                    onTap = { tap ->
+                        val inRightHalf = tap.x >= size.width / 2f
+                        if (inRightHalf) {
+                            val inTopHalf = tap.y < size.height / 2f
+                            if (inTopHalf) {
+                                onIncreaseGraphWindow()
+                            } else {
+                                onDecreaseGraphWindow()
+                            }
+                            return@detectTapGestures
+                        }
+                        if (isMonoMode) {
+                            val inLeftBottomQuarter = tap.x < size.width / 2f && tap.y >= size.height / 2f
+                            if (inLeftBottomQuarter) {
+                                onToggleMonoSign()
+                            }
                         }
                     }
                 )
@@ -2279,10 +2511,17 @@ private fun WindShiftDeviationGraph(
         ) {
             drawRect(Color(0xFF0E1E2F))
             val centerX = size.width / 2f
+            val rightLabelX = size.width - 28f
             val labelPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.WHITE
                 textSize = 24f
                 isFakeBoldText = true
+            }
+            val controlsPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.WHITE
+                textSize = 40f
+                isFakeBoldText = true
+                textAlign = android.graphics.Paint.Align.CENTER
             }
 
             drawLine(
@@ -2291,6 +2530,11 @@ private fun WindShiftDeviationGraph(
                 end = Offset(centerX, size.height),
                 strokeWidth = 2f
             )
+            drawContext.canvas.nativeCanvas.drawText("-40°", 12f, 56f, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText("0°", centerX - 14f, 56f, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText("+40°", size.width - 86f, 56f, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText("+", rightLabelX, size.height * 0.25f, controlsPaint)
+            drawContext.canvas.nativeCanvas.drawText("-", rightLabelX, size.height * 0.75f, controlsPaint)
 
             if (isMonoMode) {
                 val activeSideLabel = if (monoSignInverted) "STBD +" else "PORT +"
@@ -2307,12 +2551,45 @@ private fun WindShiftDeviationGraph(
                     size.height - 16f,
                     labelPaint
                 )
-            } else {
+            }
+            drawContext.canvas.nativeCanvas.drawText(
+                modeLabel,
+                12f,
+                28f,
+                labelPaint
+            )
+            drawContext.canvas.nativeCanvas.drawText(
+                calcIntervalLabel,
+                12f,
+                54f,
+                labelPaint
+            )
+            drawContext.canvas.nativeCanvas.drawText(
+                availableDataLabel,
+                12f,
+                80f,
+                labelPaint
+            )
+            val windowMs = (graphWindowMinutes * 60_000L).toDouble()
+            val timePaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.LTGRAY
+                textSize = 22f
+                isFakeBoldText = false
+            }
+            repeat(6) { index ->
+                val fraction = index / 5f
+                val y = fraction * size.height
+                val minutesBack = fraction * graphWindowMinutes.toFloat()
+                val label = if (index == 0) {
+                    "0m"
+                } else {
+                    "-${minutesBack.roundToInt()}m"
+                }
                 drawContext.canvas.nativeCanvas.drawText(
-                    "DUAL MODE",
-                    12f,
-                    28f,
-                    labelPaint
+                    label,
+                    centerX + 10f,
+                    y + 8f,
+                    timePaint
                 )
             }
 
@@ -2327,12 +2604,20 @@ private fun WindShiftDeviationGraph(
             }
 
             val sorted = points.sortedBy { it.timestampMs }
-            val minTs = sorted.first().timestampMs.toDouble()
-            val maxTs = sorted.last().timestampMs.toDouble()
-            val tsSpan = (maxTs - minTs).coerceAtLeast(1.0)
-            // Auto zoom: fit to current data spread with a small margin.
-            val rawAbsDeviation = sorted.maxOf { kotlin.math.abs(it.deviationDeg) }.coerceAtLeast(1.0)
-            val maxAbsDeviation = (rawAbsDeviation * 1.15).coerceAtLeast(2.0)
+            val latestTs = sorted.last().timestampMs.toDouble()
+            val windowStart = latestTs - windowMs
+            val visiblePoints = sorted.filter { it.timestampMs >= windowStart }
+            if (visiblePoints.size < 2) {
+                drawContext.canvas.nativeCanvas.drawText(
+                    "Nema dovoljno podataka za ${graphWindowMinutes} min",
+                    20f,
+                    size.height / 2f,
+                    labelPaint.apply { textSize = 30f }
+                )
+                return@Canvas
+            }
+
+            val maxAbsDeviation = 40.0
             val halfWidth = size.width / 2f - 16f
 
             val leftGuideX = centerX - halfWidth
@@ -2350,43 +2635,15 @@ private fun WindShiftDeviationGraph(
                 strokeWidth = 1f
             )
 
-            val scaleLabel = maxAbsDeviation.roundToInt()
-            drawContext.canvas.nativeCanvas.drawText("-${scaleLabel}°", 8f, 56f, labelPaint)
-            drawContext.canvas.nativeCanvas.drawText("0°", centerX - 14f, 56f, labelPaint)
-            drawContext.canvas.nativeCanvas.drawText(
-                "+${scaleLabel}°",
-                size.width - 80f,
-                56f,
-                labelPaint
-            )
-
-            val timePaint = android.graphics.Paint().apply {
-                color = android.graphics.Color.LTGRAY
-                textSize = 22f
-                isFakeBoldText = false
-            }
-            val timeFormatter = SimpleDateFormat("HH:mm", Locale.US)
-            repeat(6) { index ->
-                val fraction = index / 5f
-                val y = fraction * size.height
-                val ts = (maxTs - fraction * (maxTs - minTs)).toLong()
-                val label = timeFormatter.format(Date(ts))
-                drawContext.canvas.nativeCanvas.drawText(
-                    label,
-                    centerX + 10f,
-                    y + 8f,
-                    timePaint
-                )
-            }
-
             fun toOffset(point: DeviationPoint): Offset {
-                val timeFraction = ((point.timestampMs - minTs) / tsSpan).toFloat()
-                val y = size.height - timeFraction * size.height // older bottom, newer top
+                val elapsedFromLatest = (latestTs - point.timestampMs).coerceAtLeast(0.0)
+                val timeFraction = (elapsedFromLatest / windowMs).coerceIn(0.0, 1.0).toFloat()
+                val y = timeFraction * size.height // newer top, older bottom
                 val x = centerX + (point.deviationDeg / maxAbsDeviation).toFloat() * halfWidth
                 return Offset(x, y)
             }
 
-            sorted.zipWithNext().forEach { (a, b) ->
+            visiblePoints.zipWithNext().forEach { (a, b) ->
                 drawLine(
                     color = Color(0xFF6FC3FF),
                     start = toOffset(a),
@@ -2394,6 +2651,7 @@ private fun WindShiftDeviationGraph(
                     strokeWidth = 3f
                 )
             }
+
         }
     }
 }
@@ -2411,6 +2669,15 @@ private fun WindShiftTrackGraph(
     Box(modifier = modifier) {
         Canvas(modifier = Modifier.fillMaxSize().padding(8.dp)) {
             drawRect(Color(0xFF0E1E2F))
+            val controlsPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.WHITE
+                textSize = 40f
+                isFakeBoldText = true
+                textAlign = android.graphics.Paint.Align.CENTER
+            }
+            val rightLabelX = size.width - 24f
+            drawContext.canvas.nativeCanvas.drawText("+", rightLabelX, size.height * 0.25f, controlsPaint)
+            drawContext.canvas.nativeCanvas.drawText("-", rightLabelX, size.height * 0.75f, controlsPaint)
             if (samples.size < 2) {
                 drawContext.canvas.nativeCanvas.drawText(
                     "Nema dovoljno podataka za track",
@@ -2543,6 +2810,50 @@ private fun WindShiftTrackGraph(
             color = Color.White,
             fontWeight = FontWeight.Bold
         )
+    }
+}
+
+@Composable
+private fun WindShiftDebugScreen(
+    debug: WindShiftDebugInfo,
+    graphWindowMinutes: Long,
+    modifier: Modifier = Modifier
+) {
+    fun angle(value: Double?): String =
+        value?.let { String.format(Locale.US, "%.1f°", normalizeDegrees(it)) } ?: "--"
+    fun delta(value: Double?): String =
+        value?.let { String.format(Locale.US, "%+.1f°", it) } ?: "--"
+
+    Column(
+        modifier = modifier.padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text("Mode: ${if (debug.mode == Mode.DUAL) "DUAL" else "SINGLE"}", fontWeight = FontWeight.Bold)
+        Text("Calc interval: ${debug.calcWindowMinutes} min")
+        Text("Graph window: ${graphWindowMinutes} min")
+        Text("Available data: ${formatDuration(debug.availableDataMs / 1000.0)}")
+        Text("Samples: ${debug.sampleCount}")
+        Text("Current 5s heading: ${angle(debug.current5sHeadingDeg)}")
+        HorizontalDivider()
+        Text("SINGLE mean: ${angle(debug.singleMeanCourseDeg)}")
+        Text("SINGLE deviation: ${delta(debug.singleDeviationDeg)}")
+        HorizontalDivider()
+        Text("DUAL port mean: ${angle(debug.portMeanCourseDeg)}")
+        Text("DUAL starboard mean: ${angle(debug.starboardMeanCourseDeg)}")
+        Text("Wind axis (mid): ${angle(debug.windAxisCourseDeg)}")
+        Text("Port offset: ${delta(debug.portOffsetDeg)}")
+        Text("Starboard offset: ${delta(debug.starboardOffsetDeg)}")
+        Text("Target port: ${angle(debug.targetPortDeg)}")
+        Text("Target starboard: ${angle(debug.targetStarboardDeg)}")
+        Text("Current diff->port: ${delta(debug.diffToPortDeg)}")
+        Text("Current diff->starboard: ${delta(debug.diffToStarboardDeg)}")
+        if (debug.notes.isNotEmpty()) {
+            HorizontalDivider()
+            Text("Notes:", fontWeight = FontWeight.Bold)
+            debug.notes.forEach { note ->
+                Text("- $note")
+            }
+        }
     }
 }
 

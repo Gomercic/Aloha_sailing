@@ -22,6 +22,26 @@ enum class Mode {
     DUAL
 }
 
+data class WindShiftDebugInfo(
+    val mode: Mode,
+    val calcWindowMinutes: Long,
+    val availableDataMs: Long,
+    val sampleCount: Int,
+    val current5sHeadingDeg: Double?,
+    val singleMeanCourseDeg: Double?,
+    val singleDeviationDeg: Double?,
+    val portMeanCourseDeg: Double?,
+    val starboardMeanCourseDeg: Double?,
+    val windAxisCourseDeg: Double?,
+    val portOffsetDeg: Double?,
+    val starboardOffsetDeg: Double?,
+    val targetPortDeg: Double?,
+    val targetStarboardDeg: Double?,
+    val diffToPortDeg: Double?,
+    val diffToStarboardDeg: Double?,
+    val notes: List<String>
+)
+
 class ShiftWindAnalyzer(
     minSpeedKnots: Double = 1.0,
     minSamplesPerCluster: Int = 10,
@@ -66,6 +86,12 @@ class ShiftWindAnalyzer(
             recompute()
         }
 
+    var stdFilterSigma: Double? = 1.0
+        set(value) {
+            field = value?.coerceAtLeast(0.0)
+            recompute()
+        }
+
     var mode: Mode = Mode.SINGLE
         private set
 
@@ -88,6 +114,27 @@ class ShiftWindAnalyzer(
         private set
 
     var series: List<DeviationPoint> = emptyList()
+        private set
+
+    var debugInfo: WindShiftDebugInfo = WindShiftDebugInfo(
+        mode = Mode.SINGLE,
+        calcWindowMinutes = historyWindowMinutes,
+        availableDataMs = 0L,
+        sampleCount = 0,
+        current5sHeadingDeg = null,
+        singleMeanCourseDeg = null,
+        singleDeviationDeg = null,
+        portMeanCourseDeg = null,
+        starboardMeanCourseDeg = null,
+        windAxisCourseDeg = null,
+        portOffsetDeg = null,
+        starboardOffsetDeg = null,
+        targetPortDeg = null,
+        targetStarboardDeg = null,
+        diffToPortDeg = null,
+        diffToStarboardDeg = null,
+        notes = emptyList()
+    )
         private set
 
     private val allSamples = mutableListOf<CogSample>()
@@ -144,14 +191,28 @@ class ShiftWindAnalyzer(
             resetOutputs()
             return
         }
+        val current5sHeadingDeg = computeCurrent5sHeading(valid)
+        val availableDataMs = (valid.last().timestampMs - valid.first().timestampMs).coerceAtLeast(0L)
+        val notes = mutableListOf<String>()
 
-        when (mode) {
-            Mode.SINGLE -> recomputeSingle(valid)
-            Mode.DUAL -> recomputeDual(valid)
+        val dualEvaluation = detectAndBuildDual(valid)
+        notes.addAll(dualEvaluation.notes)
+        val dualResult = dualEvaluation.result
+        if (dualResult != null) {
+            mode = Mode.DUAL
+            applyDualResult(valid, dualResult, current5sHeadingDeg, availableDataMs, notes)
+        } else {
+            mode = Mode.SINGLE
+            recomputeSingle(valid, current5sHeadingDeg, availableDataMs, notes)
         }
     }
 
-    private fun recomputeSingle(validSamples: List<CogSample>) {
+    private fun recomputeSingle(
+        validSamples: List<CogSample>,
+        current5sHeadingDeg: Double?,
+        availableDataMs: Long,
+        notes: List<String>
+    ) {
         val mean = circularMean(validSamples.map { it.cogDeg }) ?: run {
             resetOutputs()
             return
@@ -169,70 +230,204 @@ class ShiftWindAnalyzer(
         centerCourse = mean
         series = points
         currentDeviationDeg = points.lastOrNull()?.deviationDeg
+        val currentDeviation = current5sHeadingDeg?.let { heading ->
+            var d = signedShortestAngle(heading, mean)
+            if (monoSignInverted) d = -d
+            d
+        }
+        debugInfo = WindShiftDebugInfo(
+            mode = Mode.SINGLE,
+            calcWindowMinutes = historyWindowMinutes,
+            availableDataMs = availableDataMs,
+            sampleCount = validSamples.size,
+            current5sHeadingDeg = current5sHeadingDeg,
+            singleMeanCourseDeg = mean,
+            singleDeviationDeg = currentDeviation,
+            portMeanCourseDeg = null,
+            starboardMeanCourseDeg = null,
+            windAxisCourseDeg = null,
+            portOffsetDeg = null,
+            starboardOffsetDeg = null,
+            targetPortDeg = null,
+            targetStarboardDeg = null,
+            diffToPortDeg = null,
+            diffToStarboardDeg = null,
+            notes = notes
+        )
     }
 
-    private fun recomputeDual(validSamples: List<CogSample>) {
-        val clusterResult = detectDualClusters(validSamples) ?: run {
-            resetOutputs()
-            return
+    private fun applyDualResult(
+        validSamples: List<CogSample>,
+        dualResult: DualResult,
+        current5sHeadingDeg: Double?,
+        availableDataMs: Long,
+        notes: List<String>
+    ) {
+        val points = validSamples.map { sample ->
+            val diffToPort = signedShortestAngle(sample.cogDeg, dualResult.targetPortDeg)
+            val diffToStar = signedShortestAngle(sample.cogDeg, dualResult.targetStarboardDeg)
+            val chosen = if (abs(diffToPort) <= abs(diffToStar)) diffToPort else diffToStar
+            DeviationPoint(sample.timestampMs, chosen)
         }
-
-        val meanA = clusterResult.meanA
-        val meanB = clusterResult.meanB
-        val separation = abs(signedShortestAngle(meanA, meanB))
-        if (separation !in minTackSeparationDeg..maxTackSeparationDeg) {
-            resetOutputs()
-            return
-        }
-
-        if (clusterResult.clusterA.size < minSamplesPerCluster ||
-            clusterResult.clusterB.size < minSamplesPerCluster
-        ) {
-            resetOutputs()
-            return
-        }
-
-        val spreadA = circularSpreadDeg(clusterResult.clusterA.map { it.cogDeg }, meanA)
-        val spreadB = circularSpreadDeg(clusterResult.clusterB.map { it.cogDeg }, meanB)
-        if (spreadA > maxClusterSpreadDeg || spreadB > maxClusterSpreadDeg) {
-            resetOutputs()
-            return
-        }
-
-        val center = circularMidpoint(meanA, meanB)
-        val sideA = signedShortestAngle(meanA, center)
-        val sideB = signedShortestAngle(meanB, center)
-        if (sideA == 0.0 || sideB == 0.0) {
-            resetOutputs()
-            return
-        }
-
-        val portData: ClusterData
-        val starboardData: ClusterData
-        if (sideA < 0.0) {
-            portData = ClusterData(clusterResult.clusterA, meanA)
-            starboardData = ClusterData(clusterResult.clusterB, meanB)
-        } else {
-            portData = ClusterData(clusterResult.clusterB, meanB)
-            starboardData = ClusterData(clusterResult.clusterA, meanA)
-        }
-
-        val baseAbsPort = abs(signedShortestAngle(portData.mean, center))
-        val baseAbsStarboard = abs(signedShortestAngle(starboardData.mean, center))
-        val assignment = assignToNearestCluster(validSamples, portData.mean, starboardData.mean)
-        val points = assignment.map { (sample, nearest) ->
-            val absToCenter = abs(signedShortestAngle(sample.cogDeg, center))
-            val baseline = if (nearest == ClusterId.PORT) baseAbsPort else baseAbsStarboard
-            val deviation = baseline - absToCenter
-            DeviationPoint(sample.timestampMs, deviation)
-        }
-
         singleMeanCourse = null
-        portMeanCourse = portData.mean
-        starboardMeanCourse = starboardData.mean
-        centerCourse = center
+        portMeanCourse = dualResult.portMeanDeg
+        starboardMeanCourse = dualResult.starboardMeanDeg
+        centerCourse = dualResult.windAxisDeg
         series = points
         currentDeviationDeg = points.lastOrNull()?.deviationDeg
+        val diffToPortCurrent = current5sHeadingDeg?.let {
+            signedShortestAngle(it, dualResult.targetPortDeg)
+        }
+        val diffToStarCurrent = current5sHeadingDeg?.let {
+            signedShortestAngle(it, dualResult.targetStarboardDeg)
+        }
+        debugInfo = WindShiftDebugInfo(
+            mode = Mode.DUAL,
+            calcWindowMinutes = historyWindowMinutes,
+            availableDataMs = availableDataMs,
+            sampleCount = validSamples.size,
+            current5sHeadingDeg = current5sHeadingDeg,
+            singleMeanCourseDeg = null,
+            singleDeviationDeg = null,
+            portMeanCourseDeg = dualResult.portMeanDeg,
+            starboardMeanCourseDeg = dualResult.starboardMeanDeg,
+            windAxisCourseDeg = dualResult.windAxisDeg,
+            portOffsetDeg = dualResult.portOffsetDeg,
+            starboardOffsetDeg = dualResult.starboardOffsetDeg,
+            targetPortDeg = dualResult.targetPortDeg,
+            targetStarboardDeg = dualResult.targetStarboardDeg,
+            diffToPortDeg = diffToPortCurrent,
+            diffToStarboardDeg = diffToStarCurrent,
+            notes = notes
+        )
+    }
+
+    private fun detectAndBuildDual(samples: List<CogSample>): DualEvaluation {
+        val notes = mutableListOf<String>()
+        val minTotal = minSamplesPerCluster * 2
+        if (samples.size < minTotal) {
+            notes += "DUAL fail: samples=${samples.size}, potrebno >= $minTotal"
+            return DualEvaluation(result = null, notes = notes)
+        }
+        val clusterResult = detectDualClusters(samples) ?: run {
+            notes += "DUAL fail: 2-klaster podjela nije uspjela"
+            return DualEvaluation(result = null, notes = notes)
+        }
+        var clusterA = clusterResult.clusterA
+        var clusterB = clusterResult.clusterB
+        var meanA = clusterResult.meanA
+        var meanB = clusterResult.meanB
+
+        repeat(3) { iteration ->
+            val stdA = circularStdDevDeg(clusterA.map { it.cogDeg }, meanA)
+            val stdB = circularStdDevDeg(clusterB.map { it.cogDeg }, meanB)
+            val sigma = stdFilterSigma
+            val thresholdA = sigma?.times(stdA)
+            val thresholdB = sigma?.times(stdB)
+            val filteredA = if (thresholdA != null && thresholdA > 0.0) {
+                clusterA.filter { abs(signedShortestAngle(meanA, it.cogDeg)) <= thresholdA }
+            } else {
+                clusterA
+            }
+            val filteredB = if (thresholdB != null && thresholdB > 0.0) {
+                clusterB.filter { abs(signedShortestAngle(meanB, it.cogDeg)) <= thresholdB }
+            } else {
+                clusterB
+            }
+            val rejectPctA = if (clusterA.isNotEmpty()) {
+                ((clusterA.size - filteredA.size).toDouble() * 100.0 / clusterA.size.toDouble())
+            } else {
+                0.0
+            }
+            val rejectPctB = if (clusterB.isNotEmpty()) {
+                ((clusterB.size - filteredB.size).toDouble() * 100.0 / clusterB.size.toDouble())
+            } else {
+                0.0
+            }
+            val sigmaLabel = if (sigma == null) "OFF" else "${"%.1f".format(sigma)}σ"
+            notes += "DUAL σ-pass #${iteration + 1} ($sigmaLabel): stdA=${"%.1f".format(stdA)}°, keepA=${filteredA.size}/${clusterA.size}, rejectA=${"%.1f".format(rejectPctA)}%, stdB=${"%.1f".format(stdB)}°, keepB=${filteredB.size}/${clusterB.size}, rejectB=${"%.1f".format(rejectPctB)}%"
+            if (filteredA.isEmpty() || filteredB.isEmpty()) {
+                notes += if (sigma == null) {
+                    "DUAL fail: nema valjanih točaka u jednom klasteru"
+                } else {
+                    "DUAL fail: ${"%.1f".format(sigma)}σ filter izbacio sve točke u jednom klasteru"
+                }
+                return DualEvaluation(result = null, notes = notes)
+            }
+            val newMeanA = circularMean(filteredA.map { it.cogDeg }) ?: return DualEvaluation(result = null, notes = notes + "DUAL fail: meanA nakon 1σ je null")
+            val newMeanB = circularMean(filteredB.map { it.cogDeg }) ?: return DualEvaluation(result = null, notes = notes + "DUAL fail: meanB nakon 1σ je null")
+            val changed = filteredA.size != clusterA.size ||
+                filteredB.size != clusterB.size ||
+                abs(signedShortestAngle(meanA, newMeanA)) > 0.05 ||
+                abs(signedShortestAngle(meanB, newMeanB)) > 0.05
+            clusterA = filteredA
+            clusterB = filteredB
+            meanA = newMeanA
+            meanB = newMeanB
+            if (!changed) return@repeat
+        }
+
+        val separation = abs(signedShortestAngle(meanA, meanB))
+        notes += "DUAL check: separation=${"%.1f".format(separation)}° (traženo ${"%.0f".format(minTackSeparationDeg)}..${"%.0f".format(maxTackSeparationDeg)}°)"
+        if (separation !in minTackSeparationDeg..maxTackSeparationDeg) {
+            notes += "DUAL fail: separation izvan raspona"
+            return DualEvaluation(result = null, notes = notes)
+        }
+        notes += "DUAL check: clusterA=${clusterA.size}, clusterB=${clusterB.size}, min=$minSamplesPerCluster"
+        if (clusterA.size < minSamplesPerCluster || clusterB.size < minSamplesPerCluster) {
+            notes += "DUAL fail: premalo uzoraka po klasteru"
+            return DualEvaluation(result = null, notes = notes)
+        }
+        val spreadA = circularSpreadDeg(clusterA.map { it.cogDeg }, meanA)
+        val spreadB = circularSpreadDeg(clusterB.map { it.cogDeg }, meanB)
+        notes += "DUAL check: spreadA=${"%.1f".format(spreadA)}°, spreadB=${"%.1f".format(spreadB)}°, max=${"%.0f".format(maxClusterSpreadDeg)}°"
+        if (spreadA > maxClusterSpreadDeg || spreadB > maxClusterSpreadDeg) {
+            notes += "DUAL fail: spread preširok"
+            return DualEvaluation(result = null, notes = notes)
+        }
+
+        val windAxis = circularMidpoint(meanA, meanB)
+        val sideA = signedShortestAngle(windAxis, meanA)
+        val sideB = signedShortestAngle(windAxis, meanB)
+        if (sideA == 0.0 || sideB == 0.0) {
+            notes += "DUAL fail: sredine su degenerirane oko osi vjetra"
+            return DualEvaluation(result = null, notes = notes)
+        }
+
+        val portMean: Double
+        val starboardMean: Double
+        if (sideA < 0.0) {
+            portMean = meanA
+            starboardMean = meanB
+        } else {
+            portMean = meanB
+            starboardMean = meanA
+        }
+        val portOffset = abs(signedShortestAngle(windAxis, portMean))
+        val starboardOffset = abs(signedShortestAngle(windAxis, starboardMean))
+        val targetPort = normalizeAngle360(windAxis - portOffset)
+        val targetStarboard = normalizeAngle360(windAxis + starboardOffset)
+        notes += "DUAL pass: svi uvjeti zadovoljeni"
+        return DualEvaluation(
+            result = DualResult(
+            portMeanDeg = portMean,
+            starboardMeanDeg = starboardMean,
+            windAxisDeg = windAxis,
+            portOffsetDeg = portOffset,
+            starboardOffsetDeg = starboardOffset,
+            targetPortDeg = targetPort,
+            targetStarboardDeg = targetStarboard
+            ),
+            notes = notes
+        )
+    }
+
+    private fun computeCurrent5sHeading(validSamples: List<CogSample>): Double? {
+        if (validSamples.isEmpty()) return null
+        val latest = validSamples.last().timestampMs
+        val windowStart = latest - 5_000L
+        val last5s = validSamples.filter { it.timestampMs >= windowStart }
+        return circularMean(last5s.map { it.cogDeg })
     }
 
     private fun detectDualClusters(samples: List<CogSample>): ClusterResult? {
@@ -277,22 +472,6 @@ class ShiftWindAnalyzer(
         return ClusterResult(finalA, finalB, meanA, meanB)
     }
 
-    private fun assignToNearestCluster(
-        samples: List<CogSample>,
-        portMean: Double,
-        starboardMean: Double
-    ): List<Pair<CogSample, ClusterId>> {
-        return samples.map { sample ->
-            val dPort = abs(signedShortestAngle(sample.cogDeg, portMean))
-            val dStarboard = abs(signedShortestAngle(sample.cogDeg, starboardMean))
-            if (dPort <= dStarboard) {
-                sample to ClusterId.PORT
-            } else {
-                sample to ClusterId.STARBOARD
-            }
-        }
-    }
-
     private fun pruneHistory() {
         if (allSamples.isEmpty()) return
         allSamples.sortBy { it.timestampMs }
@@ -318,6 +497,26 @@ class ShiftWindAnalyzer(
         centerCourse = null
         currentDeviationDeg = null
         series = emptyList()
+        mode = Mode.SINGLE
+        debugInfo = WindShiftDebugInfo(
+            mode = Mode.SINGLE,
+            calcWindowMinutes = historyWindowMinutes,
+            availableDataMs = 0L,
+            sampleCount = 0,
+            current5sHeadingDeg = null,
+            singleMeanCourseDeg = null,
+            singleDeviationDeg = null,
+            portMeanCourseDeg = null,
+            starboardMeanCourseDeg = null,
+            windAxisCourseDeg = null,
+            portOffsetDeg = null,
+            starboardOffsetDeg = null,
+            targetPortDeg = null,
+            targetStarboardDeg = null,
+            diffToPortDeg = null,
+            diffToStarboardDeg = null,
+            notes = emptyList()
+        )
     }
 
     companion object {
@@ -357,6 +556,16 @@ class ShiftWindAnalyzer(
             return normalizeAngle360(a + delta / 2.0)
         }
 
+        private fun circularStdDevDeg(anglesDeg: List<Double>, meanDeg: Double): Double {
+            if (anglesDeg.isEmpty()) return 0.0
+            val variance = anglesDeg
+                .asSequence()
+                .map { signedShortestAngle(meanDeg, it) }
+                .map { it * it }
+                .average()
+            return kotlin.math.sqrt(variance).coerceAtLeast(0.0)
+        }
+
         private fun circularSpreadDeg(anglesDeg: List<Double>, centerDeg: Double): Double {
             if (anglesDeg.isEmpty()) return 180.0
             var maxSpread = 0.0
@@ -375,13 +584,18 @@ class ShiftWindAnalyzer(
         val meanB: Double
     )
 
-    private data class ClusterData(
-        val samples: List<CogSample>,
-        val mean: Double
+    private data class DualResult(
+        val portMeanDeg: Double,
+        val starboardMeanDeg: Double,
+        val windAxisDeg: Double,
+        val portOffsetDeg: Double,
+        val starboardOffsetDeg: Double,
+        val targetPortDeg: Double,
+        val targetStarboardDeg: Double
     )
 
-    private enum class ClusterId {
-        PORT,
-        STARBOARD
-    }
+    private data class DualEvaluation(
+        val result: DualResult?,
+        val notes: List<String>
+    )
 }
