@@ -187,6 +187,9 @@ fun StartLineScreen() {
     var avgWindowSeconds by remember { mutableLongStateOf(DEFAULT_AVERAGE_WINDOW_SECONDS) }
     var avgWindowInput by remember { mutableStateOf(DEFAULT_AVERAGE_WINDOW_SECONDS.toString()) }
     var avgWindowError by remember { mutableStateOf<String?>(null) }
+    var gpsLocationAverageSeconds by remember { mutableLongStateOf(DEFAULT_GPS_LOCATION_AVERAGE_SECONDS) }
+    var gpsLocationAverageInput by remember { mutableStateOf(DEFAULT_GPS_LOCATION_AVERAGE_SECONDS.toString()) }
+    var gpsLocationAverageError by remember { mutableStateOf<String?>(null) }
     var countdownStartMinutes by remember { mutableLongStateOf(DEFAULT_COUNTDOWN_START_MINUTES) }
     var countdownStartInput by remember { mutableStateOf(DEFAULT_COUNTDOWN_START_MINUTES.toString()) }
     var countdownStartError by remember { mutableStateOf<String?>(null) }
@@ -291,18 +294,20 @@ fun StartLineScreen() {
     }
     val averageTrueSpeedKnots = averageMotion?.speedMps?.times(METERS_PER_SECOND_TO_KNOTS)
     val averageGpsHeadingDeg = averageMotion?.headingDeg
-    val distanceReferenceLocation = remember(currentLocation, gpsSamples) {
-        when {
-            gpsSamples.size >= 3 -> {
-                val lastThree = gpsSamples.takeLast(3).map { it.location }
-                averageLocations(lastThree)
-            }
-            gpsSamples.size == 2 -> {
-                val lastTwo = gpsSamples.takeLast(2).map { it.location }
-                averageLocations(lastTwo)
-            }
-            else -> currentLocation?.let { Location(it) }
+    val gpsSamplesForLocationAverage = remember(gpsSamples, gpsLocationAverageSeconds) {
+        val now = SystemClock.elapsedRealtime()
+        val windowMs = gpsLocationAverageSeconds * 1_000L
+        gpsSamples.filter { now - it.timestampMs <= windowMs }
+    }
+    val averagedGpsLocation = remember(gpsSamplesForLocationAverage, currentLocation) {
+        if (gpsSamplesForLocationAverage.isNotEmpty()) {
+            averageLocations(gpsSamplesForLocationAverage.map { it.location })
+        } else {
+            currentLocation?.let { Location(it) }
         }
+    }
+    val distanceReferenceLocation = remember(averagedGpsLocation) {
+        averagedGpsLocation?.let { Location(it) }
     }
 
     val gpsDistanceToLineInfo = remember(distanceReferenceLocation, leftBuoyLocation, rightBuoyLocation) {
@@ -1271,6 +1276,55 @@ fun StartLineScreen() {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(avgWindowError!!)
                         }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Prosjek GPS lokacije za liniju i bove (s)")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = gpsLocationAverageInput,
+                                onValueChange = { input ->
+                                    val sanitized = input.filter { it.isDigit() }
+                                    gpsLocationAverageInput = sanitized
+                                    val parsed = sanitized.toLongOrNull()
+                                    when {
+                                        sanitized.isBlank() -> gpsLocationAverageError =
+                                            "Unesi vrijeme u sekundama."
+
+                                        parsed == null -> gpsLocationAverageError = "Vrijednost nije valjana."
+                                        parsed < MIN_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
+                                            "Minimum je $MIN_GPS_LOCATION_AVERAGE_SECONDS s."
+
+                                        parsed > MAX_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
+                                            "Maksimum je $MAX_GPS_LOCATION_AVERAGE_SECONDS s."
+
+                                        else -> {
+                                            gpsLocationAverageError = null
+                                            gpsLocationAverageSeconds = parsed
+                                        }
+                                    }
+                                },
+                                label = { Text("GPS prosjek (s)") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.width(180.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    gpsLocationAverageSeconds = DEFAULT_GPS_LOCATION_AVERAGE_SECONDS
+                                    gpsLocationAverageInput = DEFAULT_GPS_LOCATION_AVERAGE_SECONDS.toString()
+                                    gpsLocationAverageError = null
+                                }
+                            ) {
+                                Text("Reset")
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Trenutno: ${gpsLocationAverageSeconds} s")
+                        if (gpsLocationAverageError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(gpsLocationAverageError!!)
+                        }
 
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("Minute štoperice (countdown)")
@@ -1644,7 +1698,7 @@ fun StartLineScreen() {
                             leftBuoyLat = null
                             leftBuoyLon = null
                         } else {
-                            val snapshot = currentLocation
+                            val snapshot = averagedGpsLocation
                             if (snapshot != null) {
                                 leftBuoyLat = snapshot.latitude
                                 leftBuoyLon = snapshot.longitude
@@ -1689,7 +1743,7 @@ fun StartLineScreen() {
                             rightBuoyLat = null
                             rightBuoyLon = null
                         } else {
-                            val snapshot = currentLocation
+                            val snapshot = averagedGpsLocation
                             if (snapshot != null) {
                                 rightBuoyLat = snapshot.latitude
                                 rightBuoyLon = snapshot.longitude
@@ -1826,6 +1880,9 @@ private const val EARTH_RADIUS_METERS = 6_371_000.0
 private const val DEFAULT_DOUBLE_CLICK_TIMEOUT_MS = 700L
 private const val DEFAULT_GPS_TO_BOW_DISTANCE_METERS = 0.0
 private const val DEFAULT_AVERAGE_WINDOW_SECONDS = 5L
+private const val DEFAULT_GPS_LOCATION_AVERAGE_SECONDS = 2L
+private const val MIN_GPS_LOCATION_AVERAGE_SECONDS = 1L
+private const val MAX_GPS_LOCATION_AVERAGE_SECONDS = 30L
 private const val DEFAULT_COUNTDOWN_START_MINUTES = 5L
 private const val DEFAULT_WIND_SHIFT_WINDOW_MINUTES = 2L
 private const val MIN_WIND_SHIFT_WINDOW_MINUTES = 2L
