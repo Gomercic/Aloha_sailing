@@ -59,6 +59,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedButton
@@ -104,6 +105,7 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
@@ -205,10 +207,32 @@ fun StartLineScreen() {
         mutableLongStateOf(DEFAULT_COUNTDOWN_START_MINUTES * 60L)
     }
     var isCountdownRunning by remember { mutableStateOf(false) }
+    var anchorLat by rememberSaveable { mutableStateOf<Double?>(null) }
+    var anchorLon by rememberSaveable { mutableStateOf<Double?>(null) }
+    var anchorRadiusMeters by rememberSaveable { mutableDoubleStateOf(DEFAULT_ANCHOR_RADIUS_METERS) }
+    var anchorRadiusInput by rememberSaveable { mutableStateOf(DEFAULT_ANCHOR_RADIUS_METERS.toString()) }
+    var anchorRadiusError by rememberSaveable { mutableStateOf<String?>(null) }
+    var anchorSegmentCenterDeg by rememberSaveable {
+        mutableDoubleStateOf(DEFAULT_ANCHOR_SEGMENT_CENTER_DEG)
+    }
+    var anchorSegmentCenterInput by rememberSaveable {
+        mutableStateOf(DEFAULT_ANCHOR_SEGMENT_CENTER_DEG.roundToInt().toString())
+    }
+    var anchorSegmentCenterError by rememberSaveable { mutableStateOf<String?>(null) }
+    var anchorSegmentWidthDeg by rememberSaveable {
+        mutableDoubleStateOf(DEFAULT_ANCHOR_SEGMENT_WIDTH_DEG)
+    }
+    var anchorSegmentWidthInput by rememberSaveable {
+        mutableStateOf(DEFAULT_ANCHOR_SEGMENT_WIDTH_DEG.roundToInt().toString())
+    }
+    var anchorSegmentWidthError by rememberSaveable { mutableStateOf<String?>(null) }
+    var anchorTrackPoints by remember { mutableStateOf<List<RaceTrackPoint>>(emptyList()) }
+    var anchorLastTrackLogEpochMs by remember { mutableLongStateOf(0L) }
 
     val context = LocalContext.current
     val activity = context as? Activity
     val countdownTone = remember { ToneGenerator(AudioManager.STREAM_ALARM, 100) }
+    val anchorAlarmTone = remember { ToneGenerator(AudioManager.STREAM_ALARM, 100) }
     val fusedLocationClient = remember {
         LocationServices.getFusedLocationProviderClient(context)
     }
@@ -221,6 +245,20 @@ fun StartLineScreen() {
                     val now = SystemClock.elapsedRealtime()
                     gpsSamples = (gpsSamples + GpsSample(now, Location(latestLocation)))
                         .filter { now - it.timestampMs <= MAX_GPS_SAMPLE_AGE_MS }
+                    if (anchorLat != null && anchorLon != null) {
+                        val epochNow = System.currentTimeMillis()
+                        if (
+                            anchorLastTrackLogEpochMs == 0L ||
+                            epochNow - anchorLastTrackLogEpochMs >= ANCHOR_TRACK_LOG_INTERVAL_MS
+                        ) {
+                            anchorTrackPoints = anchorTrackPoints + RaceTrackPoint(
+                                latitude = latestLocation.latitude,
+                                longitude = latestLocation.longitude,
+                                epochMillis = epochNow
+                            )
+                            anchorLastTrackLogEpochMs = epochNow
+                        }
+                    }
                     if (isTrackRecording) {
                         raceTrackPoints = raceTrackPoints + RaceTrackPoint(
                             latitude = latestLocation.latitude,
@@ -317,6 +355,58 @@ fun StartLineScreen() {
     val distanceReferenceLocation = remember(averagedGpsLocation) {
         averagedGpsLocation?.let { Location(it) }
     }
+    val anchorSetLocationAverage = remember(gpsSamples, currentLocation) {
+        val now = SystemClock.elapsedRealtime()
+        val tenSecondsWindow = ANCHOR_SET_AVERAGE_SECONDS * 1_000L
+        val samples = gpsSamples.filter { now - it.timestampMs <= tenSecondsWindow }
+        if (samples.isNotEmpty()) {
+            averageLocations(samples.map { it.location })
+        } else {
+            currentLocation?.let { Location(it) }
+        }
+    }
+    val anchorLocation = remember(anchorLat, anchorLon) {
+        locationFromCoordinates(anchorLat, anchorLon)
+    }
+    val currentToAnchorDistanceMeters = remember(currentLocation, anchorLocation) {
+        val cur = currentLocation
+        val anc = anchorLocation
+        if (cur != null && anc != null) {
+            cur.distanceTo(anc).toDouble()
+        } else {
+            null
+        }
+    }
+    val currentToAnchorBearingDeg = remember(currentLocation, anchorLocation) {
+        val cur = currentLocation
+        val anc = anchorLocation
+        if (cur != null && anc != null) {
+            normalizeDegrees(anc.bearingTo(cur).toDouble())
+        } else {
+            null
+        }
+    }
+    val isAnchorInsideSafeArea = remember(
+        currentToAnchorDistanceMeters,
+        currentToAnchorBearingDeg,
+        anchorRadiusMeters,
+        anchorSegmentCenterDeg,
+        anchorSegmentWidthDeg,
+        anchorLocation
+    ) {
+        if (anchorLocation == null || currentToAnchorDistanceMeters == null || currentToAnchorBearingDeg == null) {
+            true
+        } else {
+            val insideCircle = currentToAnchorDistanceMeters <= anchorRadiusMeters
+            val insideSegment = isAngleInsideSegment(
+                angleDeg = currentToAnchorBearingDeg,
+                centerDeg = anchorSegmentCenterDeg,
+                widthDeg = anchorSegmentWidthDeg
+            )
+            insideCircle && insideSegment
+        }
+    }
+    val anchorAlarmActive = anchorLocation != null && !isAnchorInsideSafeArea
 
     val gpsDistanceToLineInfo = remember(distanceReferenceLocation, leftBuoyLocation, rightBuoyLocation) {
         if (distanceReferenceLocation != null && leftBuoyLocation != null && rightBuoyLocation != null) {
@@ -424,6 +514,7 @@ fun StartLineScreen() {
         AppScreen.Main -> "Start Line"
         AppScreen.Settings -> "Settings"
         AppScreen.WindShift -> "WindShift"
+        AppScreen.Anchoring -> "Anchoring"
         AppScreen.WindShiftDebug -> "Wind Debug"
         AppScreen.TrackLog -> "Track Log"
         AppScreen.TrackPreview -> "Track Preview"
@@ -535,6 +626,15 @@ fun StartLineScreen() {
     DisposableEffect(Unit) {
         onDispose {
             countdownTone.release()
+            anchorAlarmTone.release()
+        }
+    }
+
+    LaunchedEffect(anchorAlarmActive) {
+        if (!anchorAlarmActive) return@LaunchedEffect
+        while (true) {
+            anchorAlarmTone.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 850)
+            delay(1_000L)
         }
     }
 
@@ -551,7 +651,11 @@ fun StartLineScreen() {
 
             if (
                 !showWelcomeScreen &&
-                (currentScreen == AppScreen.Main || currentScreen == AppScreen.WindShift)
+                (
+                    currentScreen == AppScreen.Main ||
+                        currentScreen == AppScreen.WindShift ||
+                        currentScreen == AppScreen.Anchoring
+                    )
             ) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 val updated = WindowManager.LayoutParams().apply {
@@ -664,7 +768,7 @@ fun StartLineScreen() {
                         )
                         Text(
                             text = "Tomislav Gomerčić",
-                            color = Color(0xFF8A8A8A),
+                            color = Color(0xFF6A6A6A),
                             fontSize = 9.sp,
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
@@ -837,8 +941,9 @@ fun StartLineScreen() {
                 return@Surface
             }
             val isWindShiftScreen = currentScreen == AppScreen.WindShift
+            val isAnchoringScreen = currentScreen == AppScreen.Anchoring
             val isSettingsScreen = currentScreen == AppScreen.Settings
-            val useStartLikeHeaderStyle = isWindShiftScreen || isSettingsScreen
+            val useStartLikeHeaderStyle = isWindShiftScreen || isAnchoringScreen || isSettingsScreen
             val view = LocalView.current
             val halfStatusBarTopPaddingPx = remember(view) {
                 (ViewCompat.getRootWindowInsets(view)
@@ -849,9 +954,9 @@ fun StartLineScreen() {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(if (isWindShiftScreen) Color.Black else Color.Transparent)
+                    .background(if (useStartLikeHeaderStyle) Color.Black else Color.Transparent)
                     .padding(top = if (useStartLikeHeaderStyle) halfStatusBarTopPadding else 0.dp)
-                    .padding(if (isWindShiftScreen) 6.dp else 16.dp),
+                    .padding(if (useStartLikeHeaderStyle) 6.dp else 16.dp),
                 verticalArrangement = Arrangement.Top
             ) {
                 if (currentScreen == AppScreen.TrackPreview) {
@@ -899,6 +1004,189 @@ fun StartLineScreen() {
                 )
 
                 Spacer(modifier = Modifier.height(if (isWindShiftScreen) 0.dp else 24.dp))
+
+                if (currentScreen == AppScreen.Anchoring) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    val snapshot = anchorSetLocationAverage
+                                    if (snapshot != null) {
+                                        anchorLat = snapshot.latitude
+                                        anchorLon = snapshot.longitude
+                                        anchorTrackPoints = listOf(
+                                            RaceTrackPoint(
+                                                latitude = snapshot.latitude,
+                                                longitude = snapshot.longitude,
+                                                epochMillis = System.currentTimeMillis()
+                                            )
+                                        )
+                                        anchorLastTrackLogEpochMs = System.currentTimeMillis()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF2E7D32),
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text(if (anchorLocation == null) "Set Anchor (10s avg)" else "Reset Anchor Position")
+                            }
+                            Button(
+                                onClick = {
+                                    anchorLat = null
+                                    anchorLon = null
+                                    anchorTrackPoints = emptyList()
+                                    anchorLastTrackLogEpochMs = 0L
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF616161),
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text("Clear")
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Radius (m):", color = Color.White)
+                            OutlinedTextField(
+                                value = anchorRadiusInput,
+                                onValueChange = { input ->
+                                    val sanitized = input.filter { it.isDigit() || it == '.' }
+                                    anchorRadiusInput = sanitized
+                                    val parsed = sanitized.toDoubleOrNull()
+                                    when {
+                                        sanitized.isBlank() -> anchorRadiusError = "Unesi radius."
+                                        parsed == null -> anchorRadiusError = "Neispravan broj."
+                                        parsed < MIN_ANCHOR_RADIUS_METERS -> anchorRadiusError =
+                                            "Min $MIN_ANCHOR_RADIUS_METERS m."
+                                        parsed > MAX_ANCHOR_RADIUS_METERS -> anchorRadiusError =
+                                            "Max $MAX_ANCHOR_RADIUS_METERS m."
+                                        else -> {
+                                            anchorRadiusMeters = parsed
+                                            anchorRadiusError = null
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                modifier = Modifier.width(100.dp).height(42.dp)
+                            )
+                            Spacer(modifier = Modifier.weight(1f))
+                            Text(
+                                text = if (anchorAlarmActive) "ALARM" else "SAFE",
+                                color = if (anchorAlarmActive) Color(0xFFFF6E6E) else Color(0xFF7CFC8A),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (anchorRadiusError != null) {
+                            Text(anchorRadiusError!!, color = Color(0xFFFF8080), fontSize = 11.sp)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Segment center (deg):", color = Color.White)
+                            OutlinedTextField(
+                                value = anchorSegmentCenterInput,
+                                onValueChange = { input ->
+                                    val sanitized = input.filter { it.isDigit() }
+                                    anchorSegmentCenterInput = sanitized
+                                    val parsed = sanitized.toIntOrNull()
+                                    when {
+                                        sanitized.isBlank() -> anchorSegmentCenterError = "Unesi smjer."
+                                        parsed == null -> anchorSegmentCenterError = "Neispravan broj."
+                                        parsed !in 0..359 -> anchorSegmentCenterError = "Raspon 0..359."
+                                        else -> {
+                                            anchorSegmentCenterDeg = parsed.toDouble()
+                                            anchorSegmentCenterError = null
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.width(100.dp).height(42.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Width (deg):", color = Color.White)
+                            OutlinedTextField(
+                                value = anchorSegmentWidthInput,
+                                onValueChange = { input ->
+                                    val sanitized = input.filter { it.isDigit() }
+                                    anchorSegmentWidthInput = sanitized
+                                    val parsed = sanitized.toIntOrNull()
+                                    when {
+                                        sanitized.isBlank() -> anchorSegmentWidthError = "Unesi širinu."
+                                        parsed == null -> anchorSegmentWidthError = "Neispravan broj."
+                                        parsed < MIN_ANCHOR_SEGMENT_WIDTH_DEG.toInt() ->
+                                            anchorSegmentWidthError = "Min ${MIN_ANCHOR_SEGMENT_WIDTH_DEG.toInt()}."
+                                        parsed > MAX_ANCHOR_SEGMENT_WIDTH_DEG.toInt() ->
+                                            anchorSegmentWidthError = "Max ${MAX_ANCHOR_SEGMENT_WIDTH_DEG.toInt()}."
+                                        else -> {
+                                            anchorSegmentWidthDeg = parsed.toDouble()
+                                            anchorSegmentWidthError = null
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.width(100.dp).height(42.dp)
+                            )
+                        }
+                        if (anchorSegmentCenterError != null) {
+                            Text(anchorSegmentCenterError!!, color = Color(0xFFFF8080), fontSize = 11.sp)
+                        }
+                        if (anchorSegmentWidthError != null) {
+                            Text(anchorSegmentWidthError!!, color = Color(0xFFFF8080), fontSize = 11.sp)
+                        }
+                        val distanceLabel = currentToAnchorDistanceMeters?.let {
+                            String.format(Locale.US, "%.1f m", it)
+                        } ?: "--"
+                        val bearingLabel = currentToAnchorBearingDeg?.let {
+                            String.format(Locale.US, "%.0f°", it)
+                        } ?: "--"
+                        Text(
+                            text = "Distance: $distanceLabel    Bearing: $bearingLabel    Track pts: ${anchorTrackPoints.size}",
+                            color = Color.White,
+                            fontSize = 12.sp
+                        )
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            color = Color(0xFF111111),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (anchorAlarmActive) Color(0xFFFF8A80) else Color(0xFF4A4A4A)
+                            ),
+                            tonalElevation = 0.dp
+                        ) {
+                            AnchoringMap(
+                                anchorLocation = anchorLocation,
+                                currentLocation = currentLocation,
+                                trackPoints = anchorTrackPoints,
+                                radiusMeters = anchorRadiusMeters,
+                                segmentCenterDeg = anchorSegmentCenterDeg,
+                                segmentWidthDeg = anchorSegmentWidthDeg,
+                                alarmActive = anchorAlarmActive
+                            )
+                        }
+                    }
+                    return@Column
+                }
 
                 if (currentScreen == AppScreen.WindShift) {
                     val trackHistoryMinutes = max(90L, windShiftWindowMinutes + 15L)
@@ -1130,7 +1418,11 @@ fun StartLineScreen() {
 
                 if (currentScreen == AppScreen.Settings) {
                     CompositionLocalProvider(
-                        LocalTextStyle provides LocalTextStyle.current.copy(fontSize = 12.sp)
+                        LocalContentColor provides Color.White,
+                        LocalTextStyle provides LocalTextStyle.current.copy(
+                            fontSize = 12.sp,
+                            color = Color.White
+                        )
                     ) {
                         val settingsInputColors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = Color.Transparent,
@@ -1140,11 +1432,27 @@ fun StartLineScreen() {
                             focusedContainerColor = Color.Transparent,
                             unfocusedContainerColor = Color.Transparent,
                             disabledContainerColor = Color.Transparent,
-                            errorContainerColor = Color.Transparent
+                            errorContainerColor = Color.Transparent,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            disabledTextColor = Color.White,
+                            errorTextColor = Color.White,
+                            cursorColor = Color.White,
+                            focusedLabelColor = Color.White,
+                            unfocusedLabelColor = Color.White
                         )
+                        val settingsButtonColors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF757575),
+                            contentColor = Color.White
+                        )
+                        val settingsButtonShape = RoundedCornerShape(10.dp)
+                        val settingsInputFieldModifier = Modifier
+                            .width(82.dp)
+                            .height(40.dp)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .background(Color.Black)
                                 .verticalScroll(settingsScrollState)
                         ) {
                             Row(
@@ -1176,7 +1484,7 @@ fun StartLineScreen() {
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     colors = settingsInputColors,
-                                    modifier = Modifier.width(82.dp)
+                                    modifier = settingsInputFieldModifier
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Button(
@@ -1189,6 +1497,8 @@ fun StartLineScreen() {
                                         }
                                     },
                                     modifier = Modifier.height(32.dp),
+                                    shape = settingsButtonShape,
+                                    colors = settingsButtonColors,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
                                     Text("Reset", fontSize = 11.sp)
@@ -1226,7 +1536,7 @@ fun StartLineScreen() {
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                     colors = settingsInputColors,
-                                    modifier = Modifier.width(82.dp)
+                                    modifier = settingsInputFieldModifier
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Button(
@@ -1236,6 +1546,8 @@ fun StartLineScreen() {
                                         gpsToBowDistanceError = null
                                     },
                                     modifier = Modifier.height(32.dp),
+                                    shape = settingsButtonShape,
+                                    colors = settingsButtonColors,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
                                     Text("Reset", fontSize = 11.sp)
@@ -1272,7 +1584,7 @@ fun StartLineScreen() {
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     colors = settingsInputColors,
-                                    modifier = Modifier.width(82.dp)
+                                    modifier = settingsInputFieldModifier
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Button(
@@ -1282,6 +1594,8 @@ fun StartLineScreen() {
                                         avgWindowError = null
                                     },
                                     modifier = Modifier.height(32.dp),
+                                    shape = settingsButtonShape,
+                                    colors = settingsButtonColors,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
                                     Text("Reset", fontSize = 11.sp)
@@ -1322,7 +1636,7 @@ fun StartLineScreen() {
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     colors = settingsInputColors,
-                                    modifier = Modifier.width(82.dp)
+                                    modifier = settingsInputFieldModifier
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Button(
@@ -1332,6 +1646,8 @@ fun StartLineScreen() {
                                         gpsLocationAverageError = null
                                     },
                                     modifier = Modifier.height(32.dp),
+                                    shape = settingsButtonShape,
+                                    colors = settingsButtonColors,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
                                     Text("Reset", fontSize = 11.sp)
@@ -1370,12 +1686,14 @@ fun StartLineScreen() {
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     colors = settingsInputColors,
-                                    modifier = Modifier.width(82.dp)
+                                    modifier = settingsInputFieldModifier
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Button(
                                     onClick = { applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES) },
                                     modifier = Modifier.height(32.dp),
+                                    shape = settingsButtonShape,
+                                    colors = settingsButtonColors,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
                                     Text("Reset", fontSize = 11.sp)
@@ -1415,7 +1733,7 @@ fun StartLineScreen() {
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     colors = settingsInputColors,
-                                    modifier = Modifier.width(82.dp)
+                                    modifier = settingsInputFieldModifier
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Button(
@@ -1423,6 +1741,8 @@ fun StartLineScreen() {
                                         applyWindShiftHeadingWindowSeconds(DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS)
                                     },
                                     modifier = Modifier.height(32.dp),
+                                    shape = settingsButtonShape,
+                                    colors = settingsButtonColors,
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
                                     Text("Reset", fontSize = 11.sp)
@@ -1441,7 +1761,12 @@ fun StartLineScreen() {
                             ) {
                                 Text("WindShift SD filter:")
                                 Box {
-                                    Button(onClick = { windShiftSdDropdownExpanded = true }, modifier = Modifier.height(32.dp)) {
+                                    Button(
+                                        onClick = { windShiftSdDropdownExpanded = true },
+                                        modifier = Modifier.height(32.dp),
+                                        shape = settingsButtonShape,
+                                        colors = settingsButtonColors
+                                    ) {
                                         Text(windShiftStdFilterMode.label, fontSize = 11.sp)
                                     }
                                     DropdownMenu(
@@ -1481,7 +1806,12 @@ fun StartLineScreen() {
                             ) {
                                 Text("Podloga karte:")
                                 Box {
-                                    Button(onClick = { mapModeDropdownExpanded = true }, modifier = Modifier.height(32.dp)) {
+                                    Button(
+                                        onClick = { mapModeDropdownExpanded = true },
+                                        modifier = Modifier.height(32.dp),
+                                        shape = settingsButtonShape,
+                                        colors = settingsButtonColors
+                                    ) {
                                         Text(if (mapRenderMode == MapRenderMode.Canvas) "Canvas" else "OSM", fontSize = 11.sp)
                                     }
                                     DropdownMenu(
@@ -1514,7 +1844,12 @@ fun StartLineScreen() {
                             ) {
                                 Text("Screen mode:")
                                 Box {
-                                    Button(onClick = { screenModeDropdownExpanded = true }, modifier = Modifier.height(32.dp)) {
+                                    Button(
+                                        onClick = { screenModeDropdownExpanded = true },
+                                        modifier = Modifier.height(32.dp),
+                                        shape = settingsButtonShape,
+                                        colors = settingsButtonColors
+                                    ) {
                                         Text(if (screenMode == ScreenMode.Light) "Bijeli" else "Crni", fontSize = 11.sp)
                                     }
                                     DropdownMenu(
@@ -1597,6 +1932,15 @@ private const val MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS = 30L
 private const val DEFAULT_WIND_SHIFT_GRAPH_WINDOW_MINUTES = 10L
 private const val MIN_WIND_SHIFT_GRAPH_WINDOW_MINUTES = 5L
 private const val MAX_GPS_SAMPLE_AGE_MS = (MAX_WIND_SHIFT_WINDOW_MINUTES + 15L) * 60_000L
+private const val ANCHOR_SET_AVERAGE_SECONDS = 10L
+private const val ANCHOR_TRACK_LOG_INTERVAL_MS = 30_000L
+private const val DEFAULT_ANCHOR_RADIUS_METERS = 35.0
+private const val MIN_ANCHOR_RADIUS_METERS = 5.0
+private const val MAX_ANCHOR_RADIUS_METERS = 500.0
+private const val DEFAULT_ANCHOR_SEGMENT_CENTER_DEG = 0.0
+private const val DEFAULT_ANCHOR_SEGMENT_WIDTH_DEG = 120.0
+private const val MIN_ANCHOR_SEGMENT_WIDTH_DEG = 10.0
+private const val MAX_ANCHOR_SEGMENT_WIDTH_DEG = 360.0
 private val HIGH_CONTRAST_YELLOW = Color(0xFFFFFF99)
 
 private data class Point2D(val x: Double, val y: Double)
@@ -1834,6 +2178,13 @@ private fun AppHeader(
                             }
                         )
                         DropdownMenuItem(
+                            text = { Text("Anchoring") },
+                            onClick = {
+                                onScreenSelected(AppScreen.Anchoring)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Settings") },
                             onClick = {
                                 onScreenSelected(AppScreen.Settings)
@@ -1865,6 +2216,7 @@ private enum class AppScreen {
     Main,
     Settings,
     WindShift,
+    Anchoring,
     WindShiftDebug,
     TrackLog,
     TrackPreview
@@ -1904,6 +2256,139 @@ private enum class WindShiftStdFilterMode(val label: String, val sigmaMultiplier
     Off("Isključeno", null),
     OneSigma(">1 SD", 1.0),
     TwoSigma(">2 SD", 2.0)
+}
+
+private fun signedShortestAngleDegrees(fromDeg: Double, toDeg: Double): Double {
+    var diff = (toDeg - fromDeg) % 360.0
+    if (diff > 180.0) diff -= 360.0
+    if (diff < -180.0) diff += 360.0
+    return diff
+}
+
+private fun isAngleInsideSegment(angleDeg: Double, centerDeg: Double, widthDeg: Double): Boolean {
+    if (widthDeg >= 360.0) return true
+    val halfWidth = widthDeg / 2.0
+    val delta = signedShortestAngleDegrees(centerDeg, angleDeg)
+    return abs(delta) <= halfWidth
+}
+
+@Composable
+private fun AnchoringMap(
+    anchorLocation: Location?,
+    currentLocation: Location?,
+    trackPoints: List<RaceTrackPoint>,
+    radiusMeters: Double,
+    segmentCenterDeg: Double,
+    segmentWidthDeg: Double,
+    alarmActive: Boolean
+) {
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0D0D0D))
+    ) {
+        val allLocations = buildList {
+            if (anchorLocation != null) add(anchorLocation)
+            if (currentLocation != null) add(currentLocation)
+            trackPoints.forEach { p ->
+                add(
+                    Location("anchor_track").apply {
+                        latitude = p.latitude
+                        longitude = p.longitude
+                    }
+                )
+            }
+        }
+        if (allLocations.isEmpty()) {
+            drawContext.canvas.nativeCanvas.drawText(
+                "Set anchor to start monitoring",
+                24f,
+                size.height / 2f,
+                android.graphics.Paint().apply {
+                    color = android.graphics.Color.LTGRAY
+                    textSize = 34f
+                    isAntiAlias = true
+                }
+            )
+            return@Canvas
+        }
+
+        val referenceLat = anchorLocation?.latitude ?: allLocations.first().latitude
+        val projected = allLocations.map { projectToMeters(it, referenceLat) }.toMutableList()
+        val anchorProjected = anchorLocation?.let { projectToMeters(it, referenceLat) }
+        val currentProjected = currentLocation?.let { projectToMeters(it, referenceLat) }
+        if (anchorProjected != null) {
+            projected += Point2D(anchorProjected.x - radiusMeters, anchorProjected.y - radiusMeters)
+            projected += Point2D(anchorProjected.x + radiusMeters, anchorProjected.y + radiusMeters)
+        }
+
+        val minX = projected.minOf { it.x }
+        val maxX = projected.maxOf { it.x }
+        val minY = projected.minOf { it.y }
+        val maxY = projected.maxOf { it.y }
+        val midX = (minX + maxX) / 2.0
+        val midY = (minY + maxY) / 2.0
+        val spanX = (maxX - minX).coerceAtLeast(1.0)
+        val spanY = (maxY - minY).coerceAtLeast(1.0)
+        val padding = 36f
+        val scale = minOf(
+            (size.width - 2f * padding) / spanX.toFloat(),
+            (size.height - 2f * padding) / spanY.toFloat()
+        )
+
+        fun toOffset(point: Point2D): Offset {
+            val x = ((point.x - midX).toFloat() * scale) + size.width / 2f
+            val y = size.height / 2f - ((point.y - midY).toFloat() * scale)
+            return Offset(x, y)
+        }
+
+        val trackOffsets = trackPoints.map {
+            toOffset(projectToMeters(it.latitude, it.longitude, referenceLat))
+        }
+        if (trackOffsets.size >= 2) {
+            for (i in 0 until trackOffsets.lastIndex) {
+                drawLine(
+                    color = Color(0xFFFFF176),
+                    start = trackOffsets[i],
+                    end = trackOffsets[i + 1],
+                    strokeWidth = 3f
+                )
+            }
+        }
+
+        if (anchorProjected != null) {
+            val anchorOffset = toOffset(anchorProjected)
+            val radiusPx = (radiusMeters.toFloat() * scale).coerceAtLeast(8f)
+            val segStart = (segmentCenterDeg - segmentWidthDeg / 2.0 - 90.0).toFloat()
+            drawArc(
+                color = Color(0x4432CD32),
+                startAngle = segStart,
+                sweepAngle = segmentWidthDeg.toFloat(),
+                useCenter = true,
+                topLeft = Offset(anchorOffset.x - radiusPx, anchorOffset.y - radiusPx),
+                size = androidx.compose.ui.geometry.Size(radiusPx * 2f, radiusPx * 2f)
+            )
+            drawCircle(
+                color = if (alarmActive) Color(0xFFFF8A80) else Color(0xFF66BB6A),
+                radius = radiusPx,
+                center = anchorOffset,
+                style = Stroke(width = 3f)
+            )
+            drawCircle(
+                color = Color(0xFF00BCD4),
+                radius = 8f,
+                center = anchorOffset
+            )
+        }
+
+        if (currentProjected != null) {
+            drawCircle(
+                color = if (alarmActive) Color.Red else Color.White,
+                radius = 9f,
+                center = toOffset(currentProjected)
+            )
+        }
+    }
 }
 
 @Composable
