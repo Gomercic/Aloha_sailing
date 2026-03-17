@@ -396,7 +396,7 @@ class ShiftWindAnalyzer(
 
         val portMean: Double
         val starboardMean: Double
-        if (sideA < 0.0) {
+        if (sideA > 0.0) {
             portMean = meanA
             starboardMean = meanB
         } else {
@@ -405,8 +405,8 @@ class ShiftWindAnalyzer(
         }
         val portOffset = abs(signedShortestAngle(windAxis, portMean))
         val starboardOffset = abs(signedShortestAngle(windAxis, starboardMean))
-        val targetPort = normalizeAngle360(windAxis - portOffset)
-        val targetStarboard = normalizeAngle360(windAxis + starboardOffset)
+        val targetPort = normalizeAngle360(windAxis + portOffset)
+        val targetStarboard = normalizeAngle360(windAxis - starboardOffset)
         notes += "DUAL pass: svi uvjeti zadovoljeni"
         return DualEvaluation(
             result = DualResult(

@@ -455,6 +455,9 @@ fun StartLineScreen() {
         mutableLongStateOf(DEFAULT_WIND_SHIFT_GRAPH_WINDOW_MINUTES)
     }
     var windShiftTrackOrientation by rememberSaveable { mutableStateOf(WindShiftTrackOrientation.NorthUp) }
+    var windShiftGraphDisplayMode by rememberSaveable {
+        mutableStateOf(WindShiftGraphDisplayMode.Auto)
+    }
     LaunchedEffect(showWelcomeScreen) {
         if (!showWelcomeScreen) return@LaunchedEffect
         delay(5_000L)
@@ -529,7 +532,7 @@ fun StartLineScreen() {
         }
     }
 
-    DisposableEffect(activity, currentScreen) {
+    DisposableEffect(activity, currentScreen, showWelcomeScreen) {
         val currentActivity = activity
         if (currentActivity == null) {
             onDispose { }
@@ -540,7 +543,10 @@ fun StartLineScreen() {
             }
             val originalKeepScreenOn = window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
 
-            if (currentScreen == AppScreen.Main || currentScreen == AppScreen.WindShift) {
+            if (
+                !showWelcomeScreen &&
+                (currentScreen == AppScreen.Main || currentScreen == AppScreen.WindShift)
+            ) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 val updated = WindowManager.LayoutParams().apply {
                     copyFrom(window.attributes)
@@ -909,12 +915,21 @@ fun StartLineScreen() {
                                 modeLabel = if (windAnalyzer.mode == Mode.DUAL) "DUAL MODE" else "SINGLE MODE",
                                 calcIntervalLabel = "Calc: ${windAnalyzer.debugInfo.calcWindowMinutes} min",
                                 availableDataLabel = "Data: ${formatDuration(windAnalyzer.debugInfo.availableDataMs / 1000.0)}",
+                                graphDisplayMode = windShiftGraphDisplayMode,
                                 graphWindowMinutes = windShiftGraphWindowMinutes,
                                 onIncreaseGraphWindow = {
                                     applyWindShiftGraphWindowMinutes(windShiftGraphWindowMinutes + 5L)
                                 },
                                 onDecreaseGraphWindow = {
                                     applyWindShiftGraphWindowMinutes(windShiftGraphWindowMinutes - 5L)
+                                },
+                                onToggleGraphDisplayMode = {
+                                    windShiftGraphDisplayMode =
+                                        if (windShiftGraphDisplayMode == WindShiftGraphDisplayMode.Auto) {
+                                            WindShiftGraphDisplayMode.Normal
+                                        } else {
+                                            WindShiftGraphDisplayMode.Auto
+                                        }
                                 },
                                 onToggleMonoSign = {
                                     if (windAnalyzer.mode == Mode.SINGLE) {
@@ -1858,6 +1873,11 @@ private enum class WindShiftTrackOrientation {
     WindAxisUp
 }
 
+private enum class WindShiftGraphDisplayMode {
+    Auto,
+    Normal
+}
+
 private enum class TrackPreviewRenderMode {
     TrackOnly,
     OpenMap
@@ -2475,31 +2495,46 @@ private fun WindShiftDeviationGraph(
     modeLabel: String,
     calcIntervalLabel: String,
     availableDataLabel: String,
+    graphDisplayMode: WindShiftGraphDisplayMode,
     graphWindowMinutes: Long,
     onIncreaseGraphWindow: () -> Unit,
     onDecreaseGraphWindow: () -> Unit,
+    onToggleGraphDisplayMode: () -> Unit,
     onToggleMonoSign: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val deviationThresholdDeg = 4.0
+    val deviationThresholdDeg = 5.0
     val trendBarHeight = 12.dp
     val textScale = 1.5f
+    val isAutoMode = graphDisplayMode == WindShiftGraphDisplayMode.Auto
+    val isPositiveLeft = isAutoMode && isMonoMode && !monoSignInverted
+    val displayCurrentDeviation = if (!isAutoMode && isMonoMode && monoSignInverted) {
+        currentDeviationDeg?.times(-1.0)
+    } else {
+        currentDeviationDeg
+    }
     val trendColor = when {
-        currentDeviationDeg == null -> Color(0xFF78909C)
-        kotlin.math.abs(currentDeviationDeg) <= deviationThresholdDeg -> Color(0xFF78909C)
-        currentDeviationDeg > deviationThresholdDeg -> Color(0xFF2E7D32) // prema vjetru
-        currentDeviationDeg < -deviationThresholdDeg -> Color(0xFFC62828) // od vjetra
+        displayCurrentDeviation == null -> Color(0xFF78909C)
+        kotlin.math.abs(displayCurrentDeviation) <= deviationThresholdDeg -> Color(0xFF78909C)
+        displayCurrentDeviation > deviationThresholdDeg -> Color(0xFF2E7D32) // prema vjetru
+        displayCurrentDeviation < -deviationThresholdDeg -> Color(0xFFC62828) // od vjetra
         else -> Color(0xFF78909C)
     }
+    val graphModeLabel = if (isAutoMode) "AUTO GRAPH" else "NORMAL GRAPH"
 
     Box(
         modifier = modifier
-            .pointerInput(isMonoMode, monoSignInverted, graphWindowMinutes) {
+            .pointerInput(isMonoMode, monoSignInverted, graphWindowMinutes, graphDisplayMode) {
                 detectTapGestures(
                     onTap = { tap ->
+                        val inLeftHalf = tap.x < size.width / 2f
+                        val inTopHalf = tap.y < size.height / 2f
+                        if (inLeftHalf && inTopHalf) {
+                            onToggleGraphDisplayMode()
+                            return@detectTapGestures
+                        }
                         val inRightHalf = tap.x >= size.width / 2f
                         if (inRightHalf) {
-                            val inTopHalf = tap.y < size.height / 2f
                             if (inTopHalf) {
                                 onIncreaseGraphWindow()
                             } else {
@@ -2550,9 +2585,11 @@ private fun WindShiftDeviationGraph(
                 end = Offset(centerX, size.height),
                 strokeWidth = 2f
             )
-            drawContext.canvas.nativeCanvas.drawText("-40°", 12f, 56f * textScale, labelPaint)
+            val leftScaleLabel = if (isPositiveLeft) "+40°" else "-40°"
+            val rightScaleLabel = if (isPositiveLeft) "-40°" else "+40°"
+            drawContext.canvas.nativeCanvas.drawText(leftScaleLabel, 12f, 56f * textScale, labelPaint)
             drawContext.canvas.nativeCanvas.drawText("0°", centerX - (14f * textScale), 56f * textScale, labelPaint)
-            drawContext.canvas.nativeCanvas.drawText("+40°", size.width - (86f * textScale), 56f * textScale, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText(rightScaleLabel, size.width - (86f * textScale), 56f * textScale, labelPaint)
             drawContext.canvas.nativeCanvas.drawText("+", rightLabelX, size.height * 0.25f, controlsPaint)
             drawContext.canvas.nativeCanvas.drawText("-", rightLabelX, size.height * 0.75f, controlsPaint)
 
@@ -2576,6 +2613,12 @@ private fun WindShiftDeviationGraph(
                 modeLabel,
                 12f,
                 28f * textScale,
+                labelPaint
+            )
+            drawContext.canvas.nativeCanvas.drawText(
+                graphModeLabel,
+                12f,
+                54f * textScale,
                 labelPaint
             )
             val windowMs = (graphWindowMinutes * 60_000L).toDouble()
@@ -2647,7 +2690,16 @@ private fun WindShiftDeviationGraph(
                 val elapsedFromLatest = (latestTs - point.timestampMs).coerceAtLeast(0.0)
                 val timeFraction = (elapsedFromLatest / windowMs).coerceIn(0.0, 1.0).toFloat()
                 val y = timeFraction * size.height // newer top, older bottom
-                val x = centerX + (point.deviationDeg / maxAbsDeviation).toFloat() * halfWidth
+                val displayDeviation = if (!isAutoMode && isMonoMode && monoSignInverted) {
+                    -point.deviationDeg
+                } else {
+                    point.deviationDeg
+                }
+                val x = if (isPositiveLeft) {
+                    centerX - (displayDeviation / maxAbsDeviation).toFloat() * halfWidth
+                } else {
+                    centerX + (displayDeviation / maxAbsDeviation).toFloat() * halfWidth
+                }
                 return Offset(x, y)
             }
 
