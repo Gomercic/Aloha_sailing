@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -62,6 +63,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -81,6 +83,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.TextUnit
@@ -140,7 +143,10 @@ fun StartLineScreen() {
     var showWelcomeScreen by rememberSaveable { mutableStateOf(!MainActivity.hasShownWelcomeForCurrentProcess) }
     var currentScreen by rememberSaveable { mutableStateOf(AppScreen.Main) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
-    var screenMode by rememberSaveable { mutableStateOf(ScreenMode.Light) }
+    var mapModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
+    var screenModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
+    var windShiftSdDropdownExpanded by rememberSaveable { mutableStateOf(false) }
+    var screenMode by rememberSaveable { mutableStateOf(ScreenMode.Dark) }
     var mapMode by rememberSaveable { mutableStateOf(MapMode.NorthUp) }
     var mapRenderMode by rememberSaveable { mutableStateOf(MapRenderMode.Canvas) }
     var mapZoom by rememberSaveable { mutableStateOf(1.0f) }
@@ -656,6 +662,14 @@ fun StartLineScreen() {
                                 .fillMaxSize(0.72f)
                                 .align(Alignment.Center)
                         )
+                        Text(
+                            text = "Tomislav Gomerčić",
+                            color = Color(0xFF8A8A8A),
+                            fontSize = 9.sp,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 10.dp, bottom = 8.dp)
+                        )
                     }
                 }
                 return@Surface
@@ -823,6 +837,8 @@ fun StartLineScreen() {
                 return@Surface
             }
             val isWindShiftScreen = currentScreen == AppScreen.WindShift
+            val isSettingsScreen = currentScreen == AppScreen.Settings
+            val useStartLikeHeaderStyle = isWindShiftScreen || isSettingsScreen
             val view = LocalView.current
             val halfStatusBarTopPaddingPx = remember(view) {
                 (ViewCompat.getRootWindowInsets(view)
@@ -834,7 +850,7 @@ fun StartLineScreen() {
                 modifier = Modifier
                     .fillMaxSize()
                     .background(if (isWindShiftScreen) Color.Black else Color.Transparent)
-                    .padding(top = if (isWindShiftScreen) halfStatusBarTopPadding else 0.dp)
+                    .padding(top = if (useStartLikeHeaderStyle) halfStatusBarTopPadding else 0.dp)
                     .padding(if (isWindShiftScreen) 6.dp else 16.dp),
                 verticalArrangement = Arrangement.Top
             ) {
@@ -877,9 +893,9 @@ fun StartLineScreen() {
                             currentScreen = AppScreen.Main
                         }
                     },
-                    titleColor = if (isWindShiftScreen) Color.White else MaterialTheme.colorScheme.onBackground,
-                    speedColor = if (isWindShiftScreen) HIGH_CONTRAST_YELLOW else MaterialTheme.colorScheme.onBackground,
-                    menuColor = if (isWindShiftScreen) Color.White else MaterialTheme.colorScheme.onBackground
+                    titleColor = if (useStartLikeHeaderStyle) Color.White else MaterialTheme.colorScheme.onBackground,
+                    speedColor = if (useStartLikeHeaderStyle) HIGH_CONTRAST_YELLOW else MaterialTheme.colorScheme.onBackground,
+                    menuColor = if (useStartLikeHeaderStyle) Color.White else MaterialTheme.colorScheme.onBackground
                 )
 
                 Spacer(modifier = Modifier.height(if (isWindShiftScreen) 0.dp else 24.dp))
@@ -1116,412 +1132,413 @@ fun StartLineScreen() {
                     CompositionLocalProvider(
                         LocalTextStyle provides LocalTextStyle.current.copy(fontSize = 12.sp)
                     ) {
+                        val settingsInputColors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color.Transparent,
+                            unfocusedBorderColor = Color.Transparent,
+                            disabledBorderColor = Color.Transparent,
+                            errorBorderColor = Color.Transparent,
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            errorContainerColor = Color.Transparent
+                        )
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .verticalScroll(settingsScrollState)
                         ) {
-                            Text(
-                                text = "Settings",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("Orijentacija: Portrait (zaključano)")
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("Podloga karte")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { mapRenderMode = MapRenderMode.Canvas }) {
-                                    Text("Canvas")
-                                }
-                                Button(onClick = { mapRenderMode = MapRenderMode.Osm }) {
-                                    Text("OSM")
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "Trenutna podloga: " + if (mapRenderMode == MapRenderMode.Canvas) "Canvas" else "OSM"
-                            )
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("Screen mode")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { screenMode = ScreenMode.Light }) {
-                                    Text("Bijeli")
-                                }
-                                Button(onClick = { screenMode = ScreenMode.Dark }) {
-                                    Text("Crni")
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "Trenutni mode: " + if (screenMode == ScreenMode.Light) "Bijeli" else "Crni"
-                            )
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("Timeout za dvoklik (ms)")
-                            Spacer(modifier = Modifier.height(8.dp))
                             Row(
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                Text("Minute štoperice:")
+                                Spacer(modifier = Modifier.weight(1f))
                                 OutlinedTextField(
-                                    value = timeoutInput,
+                                    value = countdownStartInput,
                                     onValueChange = { input ->
                                         val sanitized = input.filter { it.isDigit() }
-                                        timeoutInput = sanitized
+                                        countdownStartInput = sanitized
                                         val parsed = sanitized.toLongOrNull()
                                         when {
-                                            sanitized.isBlank() -> {
-                                                timeoutError = "Unesi timeout u milisekundama."
-                                            }
-
-                                            parsed == null -> {
-                                                timeoutError = "Vrijednost timeout-a nije valjana."
-                                            }
-
-                                            parsed < 100L -> {
-                                                timeoutError = "Minimum je 100 ms."
-                                            }
-
+                                            sanitized.isBlank() -> countdownStartError =
+                                                "Unesi početne minute štoperice."
+                                            parsed == null -> countdownStartError = "Vrijednost nije valjana."
+                                            parsed < 0L -> countdownStartError = "Ne može biti negativno."
                                             else -> {
-                                                timeoutError = null
-                                                doubleClickTimeoutMs = parsed
+                                                countdownStartError = null
+                                                countdownStartMinutes = parsed
+                                                if (!isCountdownRunning) {
+                                                    remainingCountdownSeconds = parsed * 60L
+                                                }
                                             }
                                         }
                                     },
-                                    label = { Text("Timeout (ms)") },
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    modifier = Modifier.width(180.dp)
+                                    colors = settingsInputColors,
+                                    modifier = Modifier.width(82.dp)
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(2.dp))
                                 Button(
                                     onClick = {
-                                        doubleClickTimeoutMs = DEFAULT_DOUBLE_CLICK_TIMEOUT_MS
-                                        timeoutInput = DEFAULT_DOUBLE_CLICK_TIMEOUT_MS.toString()
-                                        timeoutError = null
-                                    }
+                                        countdownStartMinutes = DEFAULT_COUNTDOWN_START_MINUTES
+                                        countdownStartInput = DEFAULT_COUNTDOWN_START_MINUTES.toString()
+                                        countdownStartError = null
+                                        if (!isCountdownRunning) {
+                                            remainingCountdownSeconds = DEFAULT_COUNTDOWN_START_MINUTES * 60L
+                                        }
+                                    },
+                                    modifier = Modifier.height(32.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
-                                    Text("Reset")
+                                    Text("Reset", fontSize = 11.sp)
                                 }
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Trenutni timeout: ${doubleClickTimeoutMs} ms")
-                            if (timeoutError != null) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(timeoutError!!)
+                            if (countdownStartError != null) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(countdownStartError!!)
                             }
 
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Udaljenost GPS do pramca (m)")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = gpsToBowDistanceInput,
-                                onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() || it == '.' }
-                                    gpsToBowDistanceInput = sanitized
-                                    val parsed = sanitized.toDoubleOrNull()
-                                    when {
-                                        sanitized.isBlank() -> gpsToBowDistanceError =
-                                            "Unesi udaljenost u metrima."
-
-                                        parsed == null -> gpsToBowDistanceError = "Vrijednost nije valjana."
-                                        parsed < 0.0 -> gpsToBowDistanceError = "Ne može biti negativno."
-                                        else -> {
-                                            gpsToBowDistanceError = null
-                                            gpsToBowDistanceMeters = parsed
-                                        }
-                                    }
-                                },
-                                label = { Text("GPS->pramac (m)") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                modifier = Modifier.width(180.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    gpsToBowDistanceMeters = DEFAULT_GPS_TO_BOW_DISTANCE_METERS
-                                    gpsToBowDistanceInput = DEFAULT_GPS_TO_BOW_DISTANCE_METERS.toString()
-                                    gpsToBowDistanceError = null
-                                }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Reset")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${String.format(Locale.US, "%.1f", gpsToBowDistanceMeters)} m")
-                        if (gpsToBowDistanceError != null) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(gpsToBowDistanceError!!)
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Vrijeme za prosječnu brzinu i smjer (s)")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = avgWindowInput,
-                                onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() }
-                                    avgWindowInput = sanitized
-                                    val parsed = sanitized.toLongOrNull()
-                                    when {
-                                        sanitized.isBlank() -> avgWindowError = "Unesi vrijeme u sekundama."
-                                        parsed == null -> avgWindowError = "Vrijednost nije valjana."
-                                        parsed < 1L -> avgWindowError = "Minimum je 1 s."
-                                        else -> {
-                                            avgWindowError = null
-                                            avgWindowSeconds = parsed
-                                        }
-                                    }
-                                },
-                                label = { Text("Prozor (s)") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.width(180.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    avgWindowSeconds = DEFAULT_AVERAGE_WINDOW_SECONDS
-                                    avgWindowInput = DEFAULT_AVERAGE_WINDOW_SECONDS.toString()
-                                    avgWindowError = null
-                                }
-                            ) {
-                                Text("Reset")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${avgWindowSeconds} s")
-                        if (avgWindowError != null) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(avgWindowError!!)
-                        }
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Prosjek GPS lokacije za liniju i bove (s)")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = gpsLocationAverageInput,
-                                onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() }
-                                    gpsLocationAverageInput = sanitized
-                                    val parsed = sanitized.toLongOrNull()
-                                    when {
-                                        sanitized.isBlank() -> gpsLocationAverageError =
-                                            "Unesi vrijeme u sekundama."
-
-                                        parsed == null -> gpsLocationAverageError = "Vrijednost nije valjana."
-                                        parsed < MIN_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
-                                            "Minimum je $MIN_GPS_LOCATION_AVERAGE_SECONDS s."
-
-                                        parsed > MAX_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
-                                            "Maksimum je $MAX_GPS_LOCATION_AVERAGE_SECONDS s."
-
-                                        else -> {
-                                            gpsLocationAverageError = null
-                                            gpsLocationAverageSeconds = parsed
-                                        }
-                                    }
-                                },
-                                label = { Text("GPS prosjek (s)") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.width(180.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    gpsLocationAverageSeconds = DEFAULT_GPS_LOCATION_AVERAGE_SECONDS
-                                    gpsLocationAverageInput = DEFAULT_GPS_LOCATION_AVERAGE_SECONDS.toString()
-                                    gpsLocationAverageError = null
-                                }
-                            ) {
-                                Text("Reset")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${gpsLocationAverageSeconds} s")
-                        if (gpsLocationAverageError != null) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(gpsLocationAverageError!!)
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Minute štoperice (countdown)")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = countdownStartInput,
-                                onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() }
-                                    countdownStartInput = sanitized
-                                    val parsed = sanitized.toLongOrNull()
-                                    when {
-                                        sanitized.isBlank() -> countdownStartError =
-                                            "Unesi početne minute štoperice."
-
-                                        parsed == null -> countdownStartError = "Vrijednost nije valjana."
-                                        parsed < 0L -> countdownStartError = "Ne može biti negativno."
-                                        else -> {
-                                            countdownStartError = null
-                                            countdownStartMinutes = parsed
-                                            if (!isCountdownRunning) {
-                                                remainingCountdownSeconds = parsed * 60L
+                                Text("Udaljenost GPS do pramca:")
+                                Spacer(modifier = Modifier.weight(1f))
+                                OutlinedTextField(
+                                    value = gpsToBowDistanceInput,
+                                    onValueChange = { input ->
+                                        val sanitized = input.filter { it.isDigit() || it == '.' }
+                                        gpsToBowDistanceInput = sanitized
+                                        val parsed = sanitized.toDoubleOrNull()
+                                        when {
+                                            sanitized.isBlank() -> gpsToBowDistanceError =
+                                                "Unesi udaljenost u metrima."
+                                            parsed == null -> gpsToBowDistanceError = "Vrijednost nije valjana."
+                                            parsed < 0.0 -> gpsToBowDistanceError = "Ne može biti negativno."
+                                            else -> {
+                                                gpsToBowDistanceError = null
+                                                gpsToBowDistanceMeters = parsed
                                             }
                                         }
+                                    },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    colors = settingsInputColors,
+                                    modifier = Modifier.width(82.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Button(
+                                    onClick = {
+                                        gpsToBowDistanceMeters = DEFAULT_GPS_TO_BOW_DISTANCE_METERS
+                                        gpsToBowDistanceInput = DEFAULT_GPS_TO_BOW_DISTANCE_METERS.toString()
+                                        gpsToBowDistanceError = null
+                                    },
+                                    modifier = Modifier.height(32.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Reset", fontSize = 11.sp)
+                                }
+                            }
+                            if (gpsToBowDistanceError != null) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(gpsToBowDistanceError!!)
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Prosječna brzina/smjer (s):")
+                                Spacer(modifier = Modifier.weight(1f))
+                                OutlinedTextField(
+                                    value = avgWindowInput,
+                                    onValueChange = { input ->
+                                        val sanitized = input.filter { it.isDigit() }
+                                        avgWindowInput = sanitized
+                                        val parsed = sanitized.toLongOrNull()
+                                        when {
+                                            sanitized.isBlank() -> avgWindowError = "Unesi vrijeme u sekundama."
+                                            parsed == null -> avgWindowError = "Vrijednost nije valjana."
+                                            parsed < 1L -> avgWindowError = "Minimum je 1 s."
+                                            else -> {
+                                                avgWindowError = null
+                                                avgWindowSeconds = parsed
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    colors = settingsInputColors,
+                                    modifier = Modifier.width(82.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Button(
+                                    onClick = {
+                                        avgWindowSeconds = DEFAULT_AVERAGE_WINDOW_SECONDS
+                                        avgWindowInput = DEFAULT_AVERAGE_WINDOW_SECONDS.toString()
+                                        avgWindowError = null
+                                    },
+                                    modifier = Modifier.height(32.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Reset", fontSize = 11.sp)
+                                }
+                            }
+                            if (avgWindowError != null) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(avgWindowError!!)
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Prosjek GPS lokacije (s):")
+                                Spacer(modifier = Modifier.weight(1f))
+                                OutlinedTextField(
+                                    value = gpsLocationAverageInput,
+                                    onValueChange = { input ->
+                                        val sanitized = input.filter { it.isDigit() }
+                                        gpsLocationAverageInput = sanitized
+                                        val parsed = sanitized.toLongOrNull()
+                                        when {
+                                            sanitized.isBlank() -> gpsLocationAverageError =
+                                                "Unesi vrijeme u sekundama."
+                                            parsed == null -> gpsLocationAverageError = "Vrijednost nije valjana."
+                                            parsed < MIN_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
+                                                "Minimum je $MIN_GPS_LOCATION_AVERAGE_SECONDS s."
+                                            parsed > MAX_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
+                                                "Maksimum je $MAX_GPS_LOCATION_AVERAGE_SECONDS s."
+                                            else -> {
+                                                gpsLocationAverageError = null
+                                                gpsLocationAverageSeconds = parsed
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    colors = settingsInputColors,
+                                    modifier = Modifier.width(82.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Button(
+                                    onClick = {
+                                        gpsLocationAverageSeconds = DEFAULT_GPS_LOCATION_AVERAGE_SECONDS
+                                        gpsLocationAverageInput = DEFAULT_GPS_LOCATION_AVERAGE_SECONDS.toString()
+                                        gpsLocationAverageError = null
+                                    },
+                                    modifier = Modifier.height(32.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Reset", fontSize = 11.sp)
+                                }
+                            }
+                            if (gpsLocationAverageError != null) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(gpsLocationAverageError!!)
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("WindShift prozor (min):")
+                                Spacer(modifier = Modifier.weight(1f))
+                                OutlinedTextField(
+                                    value = windShiftWindowInput,
+                                    onValueChange = { input ->
+                                        val sanitized = input.filter { it.isDigit() }
+                                        windShiftWindowInput = sanitized
+                                        val parsed = sanitized.toLongOrNull()
+                                        when {
+                                            sanitized.isBlank() -> windShiftWindowError = "Unesi minute za WindShift."
+                                            parsed == null -> windShiftWindowError = "Vrijednost nije valjana."
+                                            parsed < MIN_WIND_SHIFT_WINDOW_MINUTES ->
+                                                windShiftWindowError = "Minimum je $MIN_WIND_SHIFT_WINDOW_MINUTES min."
+                                            parsed > MAX_WIND_SHIFT_WINDOW_MINUTES ->
+                                                windShiftWindowError = "Maksimum je $MAX_WIND_SHIFT_WINDOW_MINUTES min."
+                                            else -> {
+                                                applyWindShiftWindowMinutes(parsed)
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    colors = settingsInputColors,
+                                    modifier = Modifier.width(82.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Button(
+                                    onClick = { applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES) },
+                                    modifier = Modifier.height(32.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Reset", fontSize = 11.sp)
+                                }
+                            }
+                            if (windShiftWindowError != null) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(windShiftWindowError!!)
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("WindShift smjer (s):")
+                                Spacer(modifier = Modifier.weight(1f))
+                                OutlinedTextField(
+                                    value = windShiftHeadingWindowInput,
+                                    onValueChange = { input ->
+                                        val sanitized = input.filter { it.isDigit() }
+                                        windShiftHeadingWindowInput = sanitized
+                                        val parsed = sanitized.toLongOrNull()
+                                        when {
+                                            sanitized.isBlank() -> windShiftHeadingWindowError =
+                                                "Unesi sekunde za WindShift smjer."
+                                            parsed == null -> windShiftHeadingWindowError = "Vrijednost nije valjana."
+                                            parsed < MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS ->
+                                                windShiftHeadingWindowError = "Minimum je $MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
+                                            parsed > MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS ->
+                                                windShiftHeadingWindowError = "Maksimum je $MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
+                                            else -> {
+                                                applyWindShiftHeadingWindowSeconds(parsed)
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    colors = settingsInputColors,
+                                    modifier = Modifier.width(82.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Button(
+                                    onClick = {
+                                        applyWindShiftHeadingWindowSeconds(DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS)
+                                    },
+                                    modifier = Modifier.height(32.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                                ) {
+                                    Text("Reset", fontSize = 11.sp)
+                                }
+                            }
+                            if (windShiftHeadingWindowError != null) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(windShiftHeadingWindowError!!)
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("WindShift SD filter:")
+                                Box {
+                                    Button(onClick = { windShiftSdDropdownExpanded = true }, modifier = Modifier.height(32.dp)) {
+                                        Text(windShiftStdFilterMode.label, fontSize = 11.sp)
                                     }
-                                },
-                                label = { Text("Početne minute") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.width(180.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    countdownStartMinutes = DEFAULT_COUNTDOWN_START_MINUTES
-                                    countdownStartInput = DEFAULT_COUNTDOWN_START_MINUTES.toString()
-                                    countdownStartError = null
-                                    if (!isCountdownRunning) {
-                                        remainingCountdownSeconds = DEFAULT_COUNTDOWN_START_MINUTES * 60L
+                                    DropdownMenu(
+                                        expanded = windShiftSdDropdownExpanded,
+                                        onDismissRequest = { windShiftSdDropdownExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Isključeno") },
+                                            onClick = {
+                                                windShiftStdFilterMode = WindShiftStdFilterMode.Off
+                                                windShiftSdDropdownExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(">1 SD") },
+                                            onClick = {
+                                                windShiftStdFilterMode = WindShiftStdFilterMode.OneSigma
+                                                windShiftSdDropdownExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(">2 SD") },
+                                            onClick = {
+                                                windShiftStdFilterMode = WindShiftStdFilterMode.TwoSigma
+                                                windShiftSdDropdownExpanded = false
+                                            }
+                                        )
                                     }
                                 }
-                            ) {
-                                Text("Reset")
                             }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${countdownStartMinutes} min")
-                        if (countdownStartError != null) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(countdownStartError!!)
-                        }
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("WindShift prozor (min)")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = windShiftWindowInput,
-                                onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() }
-                                    windShiftWindowInput = sanitized
-                                    val parsed = sanitized.toLongOrNull()
-                                    when {
-                                        sanitized.isBlank() -> {
-                                            windShiftWindowError = "Unesi minute za WindShift."
-                                        }
 
-                                        parsed == null -> {
-                                            windShiftWindowError = "Vrijednost nije valjana."
-                                        }
-
-                                        parsed < MIN_WIND_SHIFT_WINDOW_MINUTES -> {
-                                            windShiftWindowError =
-                                                "Minimum je $MIN_WIND_SHIFT_WINDOW_MINUTES min."
-                                        }
-
-                                        parsed > MAX_WIND_SHIFT_WINDOW_MINUTES -> {
-                                            windShiftWindowError =
-                                                "Maksimum je $MAX_WIND_SHIFT_WINDOW_MINUTES min."
-                                        }
-
-                                        else -> {
-                                            applyWindShiftWindowMinutes(parsed)
-                                        }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Podloga karte:")
+                                Box {
+                                    Button(onClick = { mapModeDropdownExpanded = true }, modifier = Modifier.height(32.dp)) {
+                                        Text(if (mapRenderMode == MapRenderMode.Canvas) "Canvas" else "OSM", fontSize = 11.sp)
                                     }
-                                },
-                                label = { Text("WindShift (min)") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.width(180.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES)
-                                }
-                            ) {
-                                Text("Reset")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${windShiftWindowMinutes} min")
-                        if (windShiftWindowError != null) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(windShiftWindowError!!)
-                        }
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("WindShift smjer: razmak točaka (s)")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = windShiftHeadingWindowInput,
-                                onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() }
-                                    windShiftHeadingWindowInput = sanitized
-                                    val parsed = sanitized.toLongOrNull()
-                                    when {
-                                        sanitized.isBlank() -> {
-                                            windShiftHeadingWindowError = "Unesi sekunde za WindShift smjer."
-                                        }
-                                        parsed == null -> {
-                                            windShiftHeadingWindowError = "Vrijednost nije valjana."
-                                        }
-                                        parsed < MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS -> {
-                                            windShiftHeadingWindowError =
-                                                "Minimum je $MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
-                                        }
-                                        parsed > MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS -> {
-                                            windShiftHeadingWindowError =
-                                                "Maksimum je $MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
-                                        }
-                                        else -> {
-                                            applyWindShiftHeadingWindowSeconds(parsed)
-                                        }
+                                    DropdownMenu(
+                                        expanded = mapModeDropdownExpanded,
+                                        onDismissRequest = { mapModeDropdownExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Canvas") },
+                                            onClick = {
+                                                mapRenderMode = MapRenderMode.Canvas
+                                                mapModeDropdownExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("OSM") },
+                                            onClick = {
+                                                mapRenderMode = MapRenderMode.Osm
+                                                mapModeDropdownExpanded = false
+                                            }
+                                        )
                                     }
-                                },
-                                label = { Text("Smjer (s)") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.width(180.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    applyWindShiftHeadingWindowSeconds(DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS)
                                 }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Reset")
+                                Text("Screen mode:")
+                                Box {
+                                    Button(onClick = { screenModeDropdownExpanded = true }, modifier = Modifier.height(32.dp)) {
+                                        Text(if (screenMode == ScreenMode.Light) "Bijeli" else "Crni", fontSize = 11.sp)
+                                    }
+                                    DropdownMenu(
+                                        expanded = screenModeDropdownExpanded,
+                                        onDismissRequest = { screenModeDropdownExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Bijeli") },
+                                            onClick = {
+                                                screenMode = ScreenMode.Light
+                                                screenModeDropdownExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Crni") },
+                                            onClick = {
+                                                screenMode = ScreenMode.Dark
+                                                screenModeDropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
                             }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${windShiftHeadingWindowSeconds} s")
-                        if (windShiftHeadingWindowError != null) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(windShiftHeadingWindowError!!)
-                        }
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("WindShift SD filter")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { windShiftStdFilterMode = WindShiftStdFilterMode.Off }) {
-                                Text("Isključeno")
-                            }
-                            Button(onClick = { windShiftStdFilterMode = WindShiftStdFilterMode.OneSigma }) {
-                                Text(">1 SD")
-                            }
-                            Button(onClick = { windShiftStdFilterMode = WindShiftStdFilterMode.TwoSigma }) {
-                                Text(">2 SD")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Trenutno: ${windShiftStdFilterMode.label}")
+
                             Spacer(modifier = Modifier.height(120.dp))
                         }
                     }
@@ -2618,7 +2635,7 @@ private fun WindShiftDeviationGraph(
             drawContext.canvas.nativeCanvas.drawText(
                 graphModeLabel,
                 12f,
-                54f * textScale,
+                78f * textScale,
                 labelPaint
             )
             val windowMs = (graphWindowMinutes * 60_000L).toDouble()
