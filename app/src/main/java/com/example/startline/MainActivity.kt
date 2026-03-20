@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.media.AudioManager
@@ -47,6 +46,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.KeyboardOptions
@@ -114,6 +114,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
@@ -146,15 +147,13 @@ class MainActivity : ComponentActivity() {
 fun StartLineScreen() {
     val context = LocalContext.current
     val activity = context as? Activity
-    val isDebugBuild = remember(context) {
-        context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-    }
     var showWelcomeScreen by rememberSaveable {
-        mutableStateOf(!MainActivity.hasShownWelcomeForCurrentProcess && !isDebugBuild)
+        mutableStateOf(!MainActivity.hasShownWelcomeForCurrentProcess)
     }
     var currentScreen by rememberSaveable {
-        mutableStateOf(if (isDebugBuild) AppScreen.Anchoring else AppScreen.Main)
+        mutableStateOf(AppScreen.Main)
     }
+    var showExitConfirmDialog by rememberSaveable { mutableStateOf(false) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var mapModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
     var screenModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
@@ -164,6 +163,9 @@ fun StartLineScreen() {
     var mapMode by rememberSaveable { mutableStateOf(MapMode.NorthUp) }
     var mapRenderMode by rememberSaveable { mutableStateOf(MapRenderMode.Canvas) }
     var mapZoom by rememberSaveable { mutableStateOf(1.0f) }
+    var anchorMapRenderMode by rememberSaveable { mutableStateOf(AnchorMapRenderMode.Canvas) }
+    var anchorMapZoom by rememberSaveable { mutableStateOf(1.0f) }
+    var anchorAutoZoomEnabled by rememberSaveable { mutableStateOf(true) }
     var speedKnots by rememberSaveable { mutableStateOf(6.0) }
     var speedStatus by rememberSaveable { mutableStateOf("Ručno podešena brzina") }
     var leftBuoyLat by rememberSaveable { mutableStateOf<Double?>(null) }
@@ -222,7 +224,9 @@ fun StartLineScreen() {
     var anchorLat by rememberSaveable { mutableStateOf<Double?>(null) }
     var anchorLon by rememberSaveable { mutableStateOf<Double?>(null) }
     var anchorRadiusMeters by rememberSaveable { mutableDoubleStateOf(DEFAULT_ANCHOR_RADIUS_METERS) }
-    var anchorRadiusInput by rememberSaveable { mutableStateOf(DEFAULT_ANCHOR_RADIUS_METERS.toString()) }
+    var anchorRadiusInput by rememberSaveable {
+        mutableStateOf(DEFAULT_ANCHOR_RADIUS_METERS.roundToInt().toString())
+    }
     var anchorRadiusError by rememberSaveable { mutableStateOf<String?>(null) }
     var anchorSegmentCenterDeg by rememberSaveable {
         mutableDoubleStateOf(DEFAULT_ANCHOR_SEGMENT_CENTER_DEG)
@@ -242,10 +246,12 @@ fun StartLineScreen() {
         mutableDoubleStateOf(DEFAULT_ANCHOR_CONE_APEX_OFFSET_METERS)
     }
     var anchorConeApexOffsetInput by rememberSaveable {
-        mutableStateOf(DEFAULT_ANCHOR_CONE_APEX_OFFSET_METERS.toString())
+        mutableStateOf(DEFAULT_ANCHOR_CONE_APEX_OFFSET_METERS.roundToInt().toString())
     }
     var anchorConeApexOffsetError by rememberSaveable { mutableStateOf<String?>(null) }
     var anchorAreaMode by rememberSaveable { mutableStateOf(AnchorAreaMode.Circle) }
+    var anchorAlarmEnabled by rememberSaveable { mutableStateOf(true) }
+    var showSetNewAnchorDialog by rememberSaveable { mutableStateOf(false) }
     var anchorTrackPoints by remember { mutableStateOf<List<RaceTrackPoint>>(emptyList()) }
     var anchorLastTrackLogEpochMs by remember { mutableLongStateOf(0L) }
 
@@ -451,6 +457,7 @@ fun StartLineScreen() {
         }
     }
     val anchorAlarmActive = anchorLocation != null && !isAnchorInsideSafeArea
+    val shouldPlayAnchorAlarm = anchorAlarmActive && anchorAlarmEnabled
 
     val gpsDistanceToLineInfo = remember(distanceReferenceLocation, leftBuoyLocation, rightBuoyLocation) {
         if (distanceReferenceLocation != null && leftBuoyLocation != null && rightBuoyLocation != null) {
@@ -674,8 +681,8 @@ fun StartLineScreen() {
         }
     }
 
-    LaunchedEffect(anchorAlarmActive) {
-        if (!anchorAlarmActive) return@LaunchedEffect
+    LaunchedEffect(shouldPlayAnchorAlarm) {
+        if (!shouldPlayAnchorAlarm) return@LaunchedEffect
         while (true) {
             anchorAlarmTone.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 850)
             delay(1_000L)
@@ -787,6 +794,29 @@ fun StartLineScreen() {
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
+            if (showExitConfirmDialog) {
+                AlertDialog(
+                    onDismissRequest = { showExitConfirmDialog = false },
+                    title = { Text("Exit") },
+                    text = { Text("Are you sure?") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showExitConfirmDialog = false
+                                MainActivity.hasShownWelcomeForCurrentProcess = false
+                                activity?.finish()
+                            }
+                        ) {
+                            Text("Yes")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showExitConfirmDialog = false }) {
+                            Text("No")
+                        }
+                    }
+                )
+            }
             if (showWelcomeScreen) {
                 Surface(
                     modifier = Modifier
@@ -840,6 +870,7 @@ fun StartLineScreen() {
                                     currentScreen = AppScreen.Main
                                 }
                             },
+                            onExitClick = { showExitConfirmDialog = true },
                             titleColor = Color.White,
                             speedColor = HIGH_CONTRAST_YELLOW,
                             menuColor = Color.White
@@ -987,7 +1018,9 @@ fun StartLineScreen() {
             val isWindShiftScreen = currentScreen == AppScreen.WindShift
             val isAnchoringScreen = currentScreen == AppScreen.Anchoring
             val isSettingsScreen = currentScreen == AppScreen.Settings
-            val useStartLikeHeaderStyle = isWindShiftScreen || isAnchoringScreen || isSettingsScreen
+            val isTrackLogScreen = currentScreen == AppScreen.TrackLog
+            val useStartLikeHeaderStyle =
+                isWindShiftScreen || isAnchoringScreen || isSettingsScreen || isTrackLogScreen
             val view = LocalView.current
             val halfStatusBarTopPaddingPx = remember(view) {
                 (ViewCompat.getRootWindowInsets(view)
@@ -1042,6 +1075,7 @@ fun StartLineScreen() {
                             currentScreen = AppScreen.Main
                         }
                     },
+                    onExitClick = { showExitConfirmDialog = true },
                     titleColor = if (useStartLikeHeaderStyle) Color.White else MaterialTheme.colorScheme.onBackground,
                     speedColor = if (useStartLikeHeaderStyle) HIGH_CONTRAST_YELLOW else MaterialTheme.colorScheme.onBackground,
                     menuColor = if (useStartLikeHeaderStyle) Color.White else MaterialTheme.colorScheme.onBackground
@@ -1079,65 +1113,161 @@ fun StartLineScreen() {
                         )
                         val anchorInputTextStyle = LocalTextStyle.current.copy(
                             color = Color.White,
-                            fontSize = 10.sp,
-                            lineHeight = 12.sp
+                            fontSize = 9.sp,
+                            lineHeight = 10.sp
                         )
                         val compactInputModifier = Modifier
                             .width(64.dp)
-                            .heightIn(min = 36.dp)
+                            .heightIn(min = 22.dp)
                         val compactText = 10.sp
+                        fun adjustAnchorRadius(delta: Int) {
+                            val current = anchorRadiusInput.toIntOrNull() ?: anchorRadiusMeters.roundToInt()
+                            val updated = (current + delta).coerceIn(
+                                MIN_ANCHOR_RADIUS_METERS.toInt(),
+                                MAX_ANCHOR_RADIUS_METERS.toInt()
+                            )
+                            anchorRadiusMeters = updated.toDouble()
+                            anchorRadiusInput = updated.toString()
+                            anchorRadiusError = null
+                        }
+                        fun adjustAnchorDirection(delta: Int) {
+                            val current = anchorSegmentCenterInput.toIntOrNull() ?: anchorSegmentCenterDeg.roundToInt()
+                            val wrapped = ((current + delta) % 360 + 360) % 360
+                            anchorSegmentCenterDeg = wrapped.toDouble()
+                            anchorSegmentCenterInput = wrapped.toString()
+                            anchorSegmentCenterError = null
+                        }
+                        fun adjustAnchorWidth(delta: Int) {
+                            val current = anchorSegmentWidthInput.toIntOrNull() ?: anchorSegmentWidthDeg.roundToInt()
+                            val updated = (current + delta).coerceIn(
+                                MIN_ANCHOR_SEGMENT_WIDTH_DEG.toInt(),
+                                MAX_ANCHOR_SEGMENT_WIDTH_DEG.toInt()
+                            )
+                            anchorSegmentWidthDeg = updated.toDouble()
+                            anchorSegmentWidthInput = updated.toString()
+                            anchorSegmentWidthError = null
+                        }
+                        fun adjustAnchorApex(delta: Int) {
+                            val current = anchorConeApexOffsetInput.toIntOrNull() ?: anchorConeApexOffsetMeters.roundToInt()
+                            val updated = (current + delta).coerceIn(
+                                MIN_ANCHOR_CONE_APEX_OFFSET_METERS.toInt(),
+                                MAX_ANCHOR_CONE_APEX_OFFSET_METERS.toInt()
+                            )
+                            anchorConeApexOffsetMeters = updated.toDouble()
+                            anchorConeApexOffsetInput = updated.toString()
+                            anchorConeApexOffsetError = null
+                        }
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            ActionButton(
+                                text = "Set anchor",
+                                background = Color(0xFF2E7D32),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(56.dp),
+                                fontSize = 14.sp,
+                                lineHeight = 14.sp,
+                                onClick = {
+                                    if (anchorLocation != null) {
+                                        showSetNewAnchorDialog = true
+                                    } else {
+                                        val snapshot = anchorSetLocationAverage
+                                        if (snapshot != null) {
+                                            anchorLat = snapshot.latitude
+                                            anchorLon = snapshot.longitude
+                                            anchorTrackPoints = listOf(
+                                                RaceTrackPoint(
+                                                    latitude = snapshot.latitude,
+                                                    longitude = snapshot.longitude,
+                                                    epochMillis = System.currentTimeMillis()
+                                                )
+                                            )
+                                            anchorLastTrackLogEpochMs = System.currentTimeMillis()
+                                            anchorAlarmEnabled = true
+                                        }
+                                    }
+                                }
+                            )
                             Button(
                                 onClick = {
-                                    val snapshot = anchorSetLocationAverage
-                                    if (snapshot != null) {
-                                        anchorLat = snapshot.latitude
-                                        anchorLon = snapshot.longitude
-                                        anchorTrackPoints = listOf(
-                                            RaceTrackPoint(
-                                                latitude = snapshot.latitude,
-                                                longitude = snapshot.longitude,
-                                                epochMillis = System.currentTimeMillis()
-                                            )
-                                        )
-                                        anchorLastTrackLogEpochMs = System.currentTimeMillis()
+                                    if (anchorAlarmEnabled) {
+                                        onDoubleClickAction("anchor_stop_continue") {
+                                            anchorAlarmEnabled = false
+                                        }
+                                    } else {
+                                        anchorAlarmEnabled = true
                                     }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(28.dp),
+                                    .height(56.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF2E7D32),
+                                    containerColor = if (anchorLocation != null) Color(0xFFD32F2F) else Color(0xFF616161),
                                     contentColor = Color.White
-                                )
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
                             ) {
-                                Text(
-                                    if (anchorLocation == null) "Set" else "Reset",
-                                    fontSize = compactText
-                                )
+                                if (anchorAlarmEnabled) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = "STOP",
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "(double click)",
+                                            fontSize = 9.sp,
+                                            lineHeight = 10.sp
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text = "Continue",
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
-                            Button(
-                                onClick = {
-                                    anchorLat = null
-                                    anchorLon = null
-                                    anchorTrackPoints = emptyList()
-                                    anchorLastTrackLogEpochMs = 0L
-                                    anchorConeApexOffsetMeters = DEFAULT_ANCHOR_CONE_APEX_OFFSET_METERS
-                                    anchorConeApexOffsetInput = DEFAULT_ANCHOR_CONE_APEX_OFFSET_METERS.toString()
-                                    anchorConeApexOffsetError = null
+                        }
+                        if (showSetNewAnchorDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showSetNewAnchorDialog = false },
+                                title = { Text("Set New Anchor Location") },
+                                text = { Text("Do you want to set a new anchor location?") },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            val snapshot = anchorSetLocationAverage
+                                            if (snapshot != null) {
+                                                anchorLat = snapshot.latitude
+                                                anchorLon = snapshot.longitude
+                                                anchorTrackPoints = listOf(
+                                                    RaceTrackPoint(
+                                                        latitude = snapshot.latitude,
+                                                        longitude = snapshot.longitude,
+                                                        epochMillis = System.currentTimeMillis()
+                                                    )
+                                                )
+                                                anchorLastTrackLogEpochMs = System.currentTimeMillis()
+                                                anchorAlarmEnabled = true
+                                            }
+                                            showSetNewAnchorDialog = false
+                                        }
+                                    ) {
+                                        Text("Yes")
+                                    }
                                 },
-                                modifier = Modifier
-                                    .width(54.dp)
-                                    .height(28.dp),
-                                colors = compactButtonColors
-                            ) {
-                                Text("Clear", fontSize = compactText)
-                            }
+                                dismissButton = {
+                                    TextButton(onClick = { showSetNewAnchorDialog = false }) {
+                                        Text("No")
+                                    }
+                                }
+                            )
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1179,9 +1309,9 @@ fun StartLineScreen() {
                             OutlinedTextField(
                                 value = anchorRadiusInput,
                                 onValueChange = { input ->
-                                    val sanitized = input.filter { it.isDigit() || it == '.' }
+                                    val sanitized = input.filter { it.isDigit() }
                                     anchorRadiusInput = sanitized
-                                    val parsed = sanitized.toDoubleOrNull()
+                                    val parsed = sanitized.toIntOrNull()
                                     when {
                                         sanitized.isBlank() -> anchorRadiusError = "Unesi radius."
                                         parsed == null -> anchorRadiusError = "Neispravan broj."
@@ -1190,7 +1320,7 @@ fun StartLineScreen() {
                                         parsed > MAX_ANCHOR_RADIUS_METERS -> anchorRadiusError =
                                             "Max $MAX_ANCHOR_RADIUS_METERS m."
                                         else -> {
-                                            anchorRadiusMeters = parsed
+                                            anchorRadiusMeters = parsed.toDouble()
                                             anchorRadiusError = null
                                         }
                                     }
@@ -1199,12 +1329,25 @@ fun StartLineScreen() {
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                 colors = anchorInputColors,
                                 textStyle = anchorInputTextStyle,
-                                modifier = compactInputModifier
+                                modifier = compactInputModifier.longPressVerticalStepAdjust(
+                                    onStepUp = { adjustAnchorRadius(1) },
+                                    onStepDown = { adjustAnchorRadius(-1) }
+                                )
                             )
                             Spacer(modifier = Modifier.weight(1f))
                             Text(
-                                text = if (anchorAlarmActive) "ALARM" else "SAFE",
-                                color = if (anchorAlarmActive) Color(0xFFFF6E6E) else Color(0xFF7CFC8A),
+                                text = when {
+                                    !anchorAlarmEnabled -> "STOP"
+                                    shouldPlayAnchorAlarm -> "ALARM"
+                                    anchorAlarmActive -> "SILENT"
+                                    else -> "SAFE"
+                                },
+                                color = when {
+                                    !anchorAlarmEnabled -> Color(0xFFB0BEC5)
+                                    shouldPlayAnchorAlarm -> Color(0xFFFF6E6E)
+                                    anchorAlarmActive -> Color(0xFFFFD54F)
+                                    else -> Color(0xFF7CFC8A)
+                                },
                                 fontWeight = FontWeight.Bold,
                                 fontSize = compactText
                             )
@@ -1239,7 +1382,10 @@ fun StartLineScreen() {
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     colors = anchorInputColors,
                                     textStyle = anchorInputTextStyle,
-                                    modifier = compactInputModifier
+                                    modifier = compactInputModifier.longPressVerticalStepAdjust(
+                                        onStepUp = { adjustAnchorDirection(1) },
+                                        onStepDown = { adjustAnchorDirection(-1) }
+                                    )
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text("W(°):", color = Color.White, fontSize = compactText)
@@ -1266,16 +1412,19 @@ fun StartLineScreen() {
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     colors = anchorInputColors,
                                     textStyle = anchorInputTextStyle,
-                                    modifier = compactInputModifier
+                                    modifier = compactInputModifier.longPressVerticalStepAdjust(
+                                        onStepUp = { adjustAnchorWidth(1) },
+                                        onStepDown = { adjustAnchorWidth(-1) }
+                                    )
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text("A(m):", color = Color.White, fontSize = compactText)
                                 OutlinedTextField(
                                     value = anchorConeApexOffsetInput,
                                     onValueChange = { input ->
-                                        val sanitized = sanitizeSignedDecimalInput(input)
+                                        val sanitized = sanitizeSignedIntegerInput(input)
                                         anchorConeApexOffsetInput = sanitized
-                                        val parsed = sanitized.toDoubleOrNull()
+                                        val parsed = sanitized.toIntOrNull()
                                         when {
                                             sanitized.isBlank() -> anchorConeApexOffsetError = "Unesi apex."
                                             parsed == null -> anchorConeApexOffsetError = "Neispravan broj."
@@ -1284,7 +1433,7 @@ fun StartLineScreen() {
                                             parsed > MAX_ANCHOR_CONE_APEX_OFFSET_METERS ->
                                                 anchorConeApexOffsetError = "Max ${MAX_ANCHOR_CONE_APEX_OFFSET_METERS.toInt()}."
                                             else -> {
-                                                anchorConeApexOffsetMeters = parsed
+                                                anchorConeApexOffsetMeters = parsed.toDouble()
                                                 anchorConeApexOffsetError = null
                                             }
                                         }
@@ -1293,7 +1442,10 @@ fun StartLineScreen() {
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                     colors = anchorInputColors,
                                     textStyle = anchorInputTextStyle,
-                                    modifier = compactInputModifier
+                                    modifier = compactInputModifier.longPressVerticalStepAdjust(
+                                        onStepUp = { adjustAnchorApex(1) },
+                                        onStepDown = { adjustAnchorApex(-1) }
+                                    )
                                 )
                             }
                             if (anchorSegmentCenterError != null) {
@@ -1320,7 +1472,7 @@ fun StartLineScreen() {
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .weight(1f),
+                                .weight(0.5f),
                             color = Color(0xFF111111),
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(
@@ -1338,9 +1490,26 @@ fun StartLineScreen() {
                                 segmentCenterDeg = anchorSegmentCenterDeg,
                                 segmentWidthDeg = anchorSegmentWidthDeg,
                                 coneApexOffsetMeters = anchorConeApexOffsetMeters,
-                                alarmActive = anchorAlarmActive
+                                alarmActive = anchorAlarmActive,
+                                renderMode = anchorMapRenderMode,
+                                mapZoom = anchorMapZoom,
+                                onToggleRenderMode = {
+                                    anchorMapRenderMode = if (anchorMapRenderMode == AnchorMapRenderMode.Canvas) {
+                                        AnchorMapRenderMode.OpenMap
+                                    } else {
+                                        AnchorMapRenderMode.Canvas
+                                    }
+                                },
+                                autoZoomEnabled = anchorAutoZoomEnabled,
+                                onToggleAutoZoom = {
+                                    anchorAutoZoomEnabled = !anchorAutoZoomEnabled
+                                },
+                                onZoomBy = { zoomFactor ->
+                                    anchorMapZoom = (anchorMapZoom * zoomFactor).coerceIn(0.18f, 6.0f)
+                                }
                             )
                         }
+                        Spacer(modifier = Modifier.weight(0.5f))
                     }
                     return@Column
                 }
@@ -1467,108 +1636,133 @@ fun StartLineScreen() {
                 }
 
                 if (currentScreen == AppScreen.TrackLog) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(trackLogScrollState),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    CompositionLocalProvider(
+                        LocalContentColor provides Color.White,
+                        LocalTextStyle provides LocalTextStyle.current.copy(
+                            color = Color.White
+                        )
                     ) {
-                        if (trackLogFiles.isEmpty()) {
-                            Text("Nema spremljenih trackova.")
-                        } else {
-                            trackLogFiles.forEach { trackFile ->
-                                Box {
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .combinedClickable(
-                                                onClick = { },
-                                                onLongClick = { trackMenuPath = trackFile.absolutePath }
-                                            ),
-                                        tonalElevation = 2.dp
-                                    ) {
-                                        Column(modifier = Modifier.padding(12.dp)) {
-                                            Text(
-                                                text = trackFile.name,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                text = formatTrackMeta(
-                                                    trackFile = trackFile,
-                                                    distanceMeters = trackLogDistanceByPath[trackFile.absolutePath]
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(trackLogScrollState),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (trackLogFiles.isEmpty()) {
+                                Text(
+                                    "Nema spremljenih trackova.",
+                                    color = Color.White
+                                )
+                            } else {
+                                trackLogFiles.forEach { trackFile ->
+                                    Box {
+                                        Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .combinedClickable(
+                                                    onClick = { },
+                                                    onLongClick = { trackMenuPath = trackFile.absolutePath }
                                                 ),
-                                                style = MaterialTheme.typography.bodySmall
+                                            color = Color(0xFF2A2A2A),
+                                            tonalElevation = 2.dp
+                                        ) {
+                                            Column(modifier = Modifier.padding(12.dp)) {
+                                                Text(
+                                                    text = trackFile.name,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White
+                                                )
+                                                Text(
+                                                    text = formatTrackMeta(
+                                                        trackFile = trackFile,
+                                                        distanceMeters = trackLogDistanceByPath[trackFile.absolutePath]
+                                                    ),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = Color.White
+                                                )
+                                            }
+                                        }
+                                        DropdownMenu(
+                                            expanded = trackMenuPath == trackFile.absolutePath,
+                                            onDismissRequest = { trackMenuPath = null },
+                                            containerColor = Color(0xFF424242)
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Show on Map", color = Color.White) },
+                                                onClick = {
+                                                    val parsed = parseRaceTrackFromGpx(trackFile)
+                                                    previewTrackName = trackFile.name
+                                                    previewTrackPoints = parsed.points
+                                                    previewRaceStartEpochMillis = parsed.raceStartEpochMillis
+                                                    previewLeftBuoy = parsed.leftBuoy
+                                                    previewRightBuoy = parsed.rightBuoy
+                                                    previewRaceStartPoint = parsed.raceStartPoint
+                                                    previewTrackRenderMode = TrackPreviewRenderMode.TrackOnly
+                                                    trackExportStatus = "Loaded track: ${trackFile.name}"
+                                                    currentScreen = AppScreen.TrackPreview
+                                                    trackMenuPath = null
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Delete", color = Color.White) },
+                                                onClick = {
+                                                    pendingDeleteTrackPath = trackFile.absolutePath
+                                                    trackMenuPath = null
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Share", color = Color.White) },
+                                                onClick = {
+                                                    shareTrackFile(context, trackFile)
+                                                    trackMenuPath = null
+                                                }
                                             )
                                         }
-                                    }
-                                    DropdownMenu(
-                                        expanded = trackMenuPath == trackFile.absolutePath,
-                                        onDismissRequest = { trackMenuPath = null }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Show on Map") },
-                                            onClick = {
-                                                val parsed = parseRaceTrackFromGpx(trackFile)
-                                                previewTrackName = trackFile.name
-                                                previewTrackPoints = parsed.points
-                                                previewRaceStartEpochMillis = parsed.raceStartEpochMillis
-                                                previewLeftBuoy = parsed.leftBuoy
-                                                previewRightBuoy = parsed.rightBuoy
-                                                previewRaceStartPoint = parsed.raceStartPoint
-                                                previewTrackRenderMode = TrackPreviewRenderMode.TrackOnly
-                                                trackExportStatus = "Loaded track: ${trackFile.name}"
-                                                currentScreen = AppScreen.TrackPreview
-                                                trackMenuPath = null
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Delete") },
-                                            onClick = {
-                                                pendingDeleteTrackPath = trackFile.absolutePath
-                                                trackMenuPath = null
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Share") },
-                                            onClick = {
-                                                shareTrackFile(context, trackFile)
-                                                trackMenuPath = null
-                                            }
-                                        )
                                     }
                                 }
                             }
-                        }
-                        pendingDeleteTrackPath?.let { deletePath ->
-                            val fileToDelete = File(deletePath)
-                            AlertDialog(
-                                onDismissRequest = { pendingDeleteTrackPath = null },
-                                title = { Text("Delete track") },
-                                text = { Text("Delete ${fileToDelete.name}?") },
-                                confirmButton = {
-                                    TextButton(
-                                        onClick = {
-                                            val deleted = fileToDelete.delete()
-                                            trackExportStatus = if (deleted) {
-                                                "Deleted: ${fileToDelete.name}"
-                                            } else {
-                                                "Delete failed: ${fileToDelete.name}"
-                                            }
-                                            trackLogRefreshTick += 1
-                                            pendingDeleteTrackPath = null
+                            pendingDeleteTrackPath?.let { deletePath ->
+                                val fileToDelete = File(deletePath)
+                                AlertDialog(
+                                    onDismissRequest = { pendingDeleteTrackPath = null },
+                                    containerColor = Color(0xFF424242),
+                                    titleContentColor = Color.White,
+                                    textContentColor = Color.White,
+                                    title = { Text("Delete track") },
+                                    text = { Text("Delete ${fileToDelete.name}?") },
+                                    confirmButton = {
+                                        TextButton(
+                                            onClick = {
+                                                val deleted = fileToDelete.delete()
+                                                trackExportStatus = if (deleted) {
+                                                    "Deleted: ${fileToDelete.name}"
+                                                } else {
+                                                    "Delete failed: ${fileToDelete.name}"
+                                                }
+                                                trackLogRefreshTick += 1
+                                                pendingDeleteTrackPath = null
+                                            },
+                                            colors = ButtonDefaults.textButtonColors(
+                                                contentColor = HIGH_CONTRAST_YELLOW
+                                            )
+                                        ) {
+                                            Text("Delete")
                                         }
-                                    ) {
-                                        Text("Delete")
+                                    },
+                                    dismissButton = {
+                                        TextButton(
+                                            onClick = { pendingDeleteTrackPath = null },
+                                            colors = ButtonDefaults.textButtonColors(
+                                                contentColor = Color.White
+                                            )
+                                        ) {
+                                            Text("Cancel")
+                                        }
                                     }
-                                },
-                                dismissButton = {
-                                    TextButton(onClick = { pendingDeleteTrackPath = null }) {
-                                        Text("Cancel")
-                                    }
-                                }
-                            )
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(80.dp))
                         }
-                        Spacer(modifier = Modifier.height(80.dp))
                     }
                     return@Column
                 }
@@ -2099,7 +2293,7 @@ private const val MAX_GPS_SAMPLE_AGE_MS = (MAX_WIND_SHIFT_WINDOW_MINUTES + 15L) 
 private const val ANCHOR_SET_AVERAGE_SECONDS = 10L
 private const val ANCHOR_TRACK_LOG_INTERVAL_MS = 30_000L
 private const val DEFAULT_ANCHOR_RADIUS_METERS = 35.0
-private const val MIN_ANCHOR_RADIUS_METERS = 5.0
+private const val MIN_ANCHOR_RADIUS_METERS = 1.0
 private const val MAX_ANCHOR_RADIUS_METERS = 500.0
 private const val DEFAULT_ANCHOR_SEGMENT_CENTER_DEG = 0.0
 private const val DEFAULT_ANCHOR_SEGMENT_WIDTH_DEG = 120.0
@@ -2208,20 +2402,40 @@ private fun offsetLocationByMeters(start: Location, bearingDeg: Double, distance
     }
 }
 
-private fun sanitizeSignedDecimalInput(input: String): String {
-    val filtered = input.filter { it.isDigit() || it == '.' || it == '-' }
+private fun sanitizeSignedIntegerInput(input: String): String {
+    val filtered = input.filter { it.isDigit() || it == '-' }
     val hasLeadingMinus = filtered.startsWith('-')
-    val core = if (hasLeadingMinus) filtered.drop(1) else filtered
-    val withoutExtraMinus = core.replace("-", "")
-    val dotIndex = withoutExtraMinus.indexOf('.')
-    val normalizedCore = if (dotIndex >= 0) {
-        val before = withoutExtraMinus.substring(0, dotIndex + 1)
-        val after = withoutExtraMinus.substring(dotIndex + 1).replace(".", "")
-        before + after
+    val digitsOnly = if (hasLeadingMinus) {
+        filtered.drop(1).replace("-", "")
     } else {
-        withoutExtraMinus
+        filtered.replace("-", "")
     }
-    return (if (hasLeadingMinus) "-" else "") + normalizedCore
+    return (if (hasLeadingMinus) "-" else "") + digitsOnly
+}
+
+private fun Modifier.longPressVerticalStepAdjust(
+    stepPx: Float = 16f,
+    onStepUp: () -> Unit,
+    onStepDown: () -> Unit
+): Modifier = this.pointerInput(Unit) {
+    var accumulatedDragY = 0f
+    detectDragGestures(
+        onDragStart = { accumulatedDragY = 0f },
+        onDragEnd = { accumulatedDragY = 0f },
+        onDragCancel = { accumulatedDragY = 0f },
+        onDrag = { change, dragAmount ->
+            change.consume()
+            accumulatedDragY += dragAmount.y
+            while (accumulatedDragY <= -stepPx) {
+                onStepUp()
+                accumulatedDragY += stepPx
+            }
+            while (accumulatedDragY >= stepPx) {
+                onStepDown()
+                accumulatedDragY -= stepPx
+            }
+        }
+    )
 }
 
 private fun calculateAverageMotion(samples: List<GpsSample>): AverageMotion? {
@@ -2308,6 +2522,7 @@ private fun AppHeader(
     onMenuExpandedChange: (Boolean) -> Unit,
     onScreenSelected: (AppScreen) -> Unit,
     onToggleMainWindShift: () -> Unit,
+    onExitClick: () -> Unit,
     menuIconFontSize: TextUnit = 26.sp,
     titleColor: Color = MaterialTheme.colorScheme.onBackground,
     speedColor: Color = MaterialTheme.colorScheme.onBackground,
@@ -2399,6 +2614,13 @@ private fun AppHeader(
                             }
                         )
                         DropdownMenuItem(
+                            text = { Text("Track Log") },
+                            onClick = {
+                                onScreenSelected(AppScreen.TrackLog)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Wind Debug") },
                             onClick = {
                                 onScreenSelected(AppScreen.WindShiftDebug)
@@ -2406,10 +2628,10 @@ private fun AppHeader(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Track Log") },
+                            text = { Text("Exit") },
                             onClick = {
-                                onScreenSelected(AppScreen.TrackLog)
                                 onMenuExpandedChange(false)
+                                onExitClick()
                             }
                         )
                     }
@@ -2464,6 +2686,11 @@ private enum class AnchorAreaMode(val label: String) {
     Conus("Conus")
 }
 
+private enum class AnchorMapRenderMode {
+    Canvas,
+    OpenMap
+}
+
 private enum class WindShiftStdFilterMode(val label: String, val sigmaMultiplier: Double?) {
     Off("Isključeno", null),
     OneSigma(">1 SD", 1.0),
@@ -2494,179 +2721,428 @@ private fun AnchoringMap(
     segmentCenterDeg: Double,
     segmentWidthDeg: Double,
     coneApexOffsetMeters: Double,
-    alarmActive: Boolean
+    alarmActive: Boolean,
+    renderMode: AnchorMapRenderMode,
+    mapZoom: Float,
+    onToggleRenderMode: () -> Unit,
+    autoZoomEnabled: Boolean,
+    onToggleAutoZoom: () -> Unit,
+    onZoomBy: (Float) -> Unit
 ) {
-    Canvas(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0D0D0D))
-    ) {
-        val allLocations = buildList {
-            if (anchorLocation != null) add(anchorLocation)
-            if (currentLocation != null) add(currentLocation)
-            trackPoints.forEach { p ->
-                add(
-                    Location("anchor_track").apply {
-                        latitude = p.latitude
-                        longitude = p.longitude
+            .pointerInput(renderMode) {
+                detectTapGestures(
+                    onTap = { tap ->
+                        val w = size.width.toFloat()
+                        val h = size.height.toFloat()
+                        val topHalf = tap.y < h / 2f
+                        val bottomHalf = !topHalf
+                        val leftHalf = tap.x < w / 2f
+                        val topLeftQuarter = topHalf && leftHalf
+                        val bottomLeftQuarter = bottomHalf && leftHalf
+                        when {
+                            topLeftQuarter -> onToggleRenderMode()
+                            bottomLeftQuarter -> onToggleAutoZoom()
+                        }
                     }
                 )
             }
-        }.toMutableList()
-        if (allLocations.isEmpty()) {
-            drawContext.canvas.nativeCanvas.drawText(
-                "Set anchor to start monitoring",
-                24f,
-                size.height / 2f,
-                android.graphics.Paint().apply {
-                    color = android.graphics.Color.LTGRAY
-                    textSize = 34f
-                    isAntiAlias = true
+            .then(
+                if (renderMode == AnchorMapRenderMode.Canvas) {
+                    Modifier.pointerInput(mapZoom) {
+                        detectTransformGestures { _, _, zoom, _ ->
+                            onZoomBy(zoom)
+                        }
+                    }
+                } else {
+                    Modifier
                 }
             )
-            return@Canvas
-        }
+    ) {
+        if (renderMode == AnchorMapRenderMode.Canvas) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0D0D0D))
+            ) {
+                val allLocations = buildList {
+                    if (anchorLocation != null) add(anchorLocation)
+                    if (currentLocation != null) add(currentLocation)
+                    trackPoints.forEach { p ->
+                        add(
+                            Location("anchor_track").apply {
+                                latitude = p.latitude
+                                longitude = p.longitude
+                            }
+                        )
+                    }
+                }.toMutableList()
+                if (allLocations.isEmpty()) {
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "Set anchor to start monitoring",
+                        24f,
+                        size.height / 2f,
+                        android.graphics.Paint().apply {
+                            color = android.graphics.Color.LTGRAY
+                            textSize = 34f
+                            isAntiAlias = true
+                        }
+                    )
+                    return@Canvas
+                }
+                val conusApexLocation = if (anchorLocation != null && areaMode == AnchorAreaMode.Conus) {
+                    offsetLocationByMeters(
+                        start = anchorLocation,
+                        bearingDeg = segmentCenterDeg,
+                        distanceMeters = coneApexOffsetMeters
+                    )
+                } else {
+                    null
+                }
+                if (conusApexLocation != null) {
+                    allLocations += conusApexLocation
+                }
+                val referenceLat = anchorLocation?.latitude ?: allLocations.first().latitude
+                val projected = allLocations.map { projectToMeters(it, referenceLat) }.toMutableList()
+                val anchorProjected = anchorLocation?.let { projectToMeters(it, referenceLat) }
+                val apexProjected = conusApexLocation?.let { projectToMeters(it, referenceLat) }
+                val currentProjected = currentLocation?.let { projectToMeters(it, referenceLat) }
+                val radiusCenter = if (areaMode == AnchorAreaMode.Conus) apexProjected ?: anchorProjected else anchorProjected
+                if (radiusCenter != null) {
+                    projected += Point2D(radiusCenter.x - radiusMeters, radiusCenter.y - radiusMeters)
+                    projected += Point2D(radiusCenter.x + radiusMeters, radiusCenter.y + radiusMeters)
+                }
 
-        val conusApexLocation = if (anchorLocation != null && areaMode == AnchorAreaMode.Conus) {
-            offsetLocationByMeters(
-                start = anchorLocation,
-                bearingDeg = segmentCenterDeg,
-                distanceMeters = coneApexOffsetMeters
-            )
+                val minX = projected.minOf { it.x }
+                val maxX = projected.maxOf { it.x }
+                val minY = projected.minOf { it.y }
+                val maxY = projected.maxOf { it.y }
+                val midX = (minX + maxX) / 2.0
+                val midY = (minY + maxY) / 2.0
+                val spanX = (maxX - minX).coerceAtLeast(1.0)
+                val spanY = (maxY - minY).coerceAtLeast(1.0)
+                val padding = 36f
+                val baseScale = minOf(
+                    (size.width - 2f * padding) / spanX.toFloat(),
+                    (size.height - 2f * padding) / spanY.toFloat()
+                )
+                val scale = baseScale * mapZoom
+
+                fun toOffset(point: Point2D): Offset {
+                    val x = ((point.x - midX).toFloat() * scale) + size.width / 2f
+                    val y = size.height / 2f - ((point.y - midY).toFloat() * scale)
+                    return Offset(x, y)
+                }
+
+                val trackOffsets = trackPoints.map {
+                    toOffset(projectToMeters(it.latitude, it.longitude, referenceLat))
+                }
+                if (trackOffsets.size >= 2) {
+                    for (i in 0 until trackOffsets.lastIndex) {
+                        drawLine(
+                            color = Color(0xFFFFF176),
+                            start = trackOffsets[i],
+                            end = trackOffsets[i + 1],
+                            strokeWidth = 3f
+                        )
+                    }
+                }
+
+                if (anchorProjected != null) {
+                    val anchorOffset = toOffset(anchorProjected)
+                    val radiusPx = (radiusMeters.toFloat() * scale).coerceAtLeast(8f)
+                    if (areaMode == AnchorAreaMode.Circle) {
+                        drawCircle(
+                            color = if (alarmActive) Color(0xFFFF8A80) else Color(0xFF66BB6A),
+                            radius = radiusPx,
+                            center = anchorOffset,
+                            style = Stroke(width = 3f)
+                        )
+                    } else {
+                        val apex = apexProjected ?: anchorProjected
+                        val apexOffset = toOffset(apex)
+                        val segStart = (segmentCenterDeg - segmentWidthDeg / 2.0 - 90.0).toFloat()
+                        drawArc(
+                            color = if (alarmActive) Color(0x44FF8A80) else Color(0x4432CD32),
+                            startAngle = segStart,
+                            sweepAngle = segmentWidthDeg.toFloat(),
+                            useCenter = true,
+                            topLeft = Offset(apexOffset.x - radiusPx, apexOffset.y - radiusPx),
+                            size = androidx.compose.ui.geometry.Size(radiusPx * 2f, radiusPx * 2f)
+                        )
+                        drawArc(
+                            color = if (alarmActive) Color(0xFFFF8A80) else Color(0xFF66BB6A),
+                            startAngle = segStart,
+                            sweepAngle = segmentWidthDeg.toFloat(),
+                            useCenter = false,
+                            topLeft = Offset(apexOffset.x - radiusPx, apexOffset.y - radiusPx),
+                            size = androidx.compose.ui.geometry.Size(radiusPx * 2f, radiusPx * 2f),
+                            style = Stroke(width = 3f)
+                        )
+                        val leftEdgeDeg = segmentCenterDeg - segmentWidthDeg / 2.0
+                        val rightEdgeDeg = segmentCenterDeg + segmentWidthDeg / 2.0
+                        val leftVec = headingToUnitVector(normalizeDegrees(leftEdgeDeg))
+                        val rightVec = headingToUnitVector(normalizeDegrees(rightEdgeDeg))
+                        val edgeColor = if (alarmActive) Color(0xFFFF8A80) else Color(0xFF66BB6A)
+                        drawLine(
+                            color = edgeColor,
+                            start = apexOffset,
+                            end = Offset(
+                                x = apexOffset.x + leftVec.x.toFloat() * radiusPx,
+                                y = apexOffset.y - leftVec.y.toFloat() * radiusPx
+                            ),
+                            strokeWidth = 3f
+                        )
+                        drawLine(
+                            color = edgeColor,
+                            start = apexOffset,
+                            end = Offset(
+                                x = apexOffset.x + rightVec.x.toFloat() * radiusPx,
+                                y = apexOffset.y - rightVec.y.toFloat() * radiusPx
+                            ),
+                            strokeWidth = 3f
+                        )
+                        drawCircle(
+                            color = Color(0xFFFFD54F),
+                            radius = 6f,
+                            center = apexOffset
+                        )
+                        drawLine(
+                            color = Color(0xFF7E7E7E),
+                            start = anchorOffset,
+                            end = apexOffset,
+                            strokeWidth = 2f
+                        )
+                    }
+                    drawCircle(
+                        color = Color(0xFF00BCD4),
+                        radius = 8f,
+                        center = anchorOffset
+                    )
+                }
+
+                if (currentProjected != null) {
+                    drawCircle(
+                        color = if (alarmActive) Color.Red else Color.White,
+                        radius = 9f,
+                        center = toOffset(currentProjected)
+                    )
+                }
+            }
         } else {
-            null
-        }
-        if (conusApexLocation != null) {
-            allLocations += conusApexLocation
-        }
-        val referenceLat = anchorLocation?.latitude ?: allLocations.first().latitude
-        val projected = allLocations.map { projectToMeters(it, referenceLat) }.toMutableList()
-        val anchorProjected = anchorLocation?.let { projectToMeters(it, referenceLat) }
-        val apexProjected = conusApexLocation?.let { projectToMeters(it, referenceLat) }
-        val currentProjected = currentLocation?.let { projectToMeters(it, referenceLat) }
-        val radiusCenter = if (areaMode == AnchorAreaMode.Conus) apexProjected ?: anchorProjected else anchorProjected
-        if (radiusCenter != null) {
-            projected += Point2D(radiusCenter.x - radiusMeters, radiusCenter.y - radiusMeters)
-            projected += Point2D(radiusCenter.x + radiusMeters, radiusCenter.y + radiusMeters)
-        }
-
-        val minX = projected.minOf { it.x }
-        val maxX = projected.maxOf { it.x }
-        val minY = projected.minOf { it.y }
-        val maxY = projected.maxOf { it.y }
-        val midX = (minX + maxX) / 2.0
-        val midY = (minY + maxY) / 2.0
-        val spanX = (maxX - minX).coerceAtLeast(1.0)
-        val spanY = (maxY - minY).coerceAtLeast(1.0)
-        val padding = 36f
-        val scale = minOf(
-            (size.width - 2f * padding) / spanX.toFloat(),
-            (size.height - 2f * padding) / spanY.toFloat()
-        )
-
-        fun toOffset(point: Point2D): Offset {
-            val x = ((point.x - midX).toFloat() * scale) + size.width / 2f
-            val y = size.height / 2f - ((point.y - midY).toFloat() * scale)
-            return Offset(x, y)
-        }
-
-        val trackOffsets = trackPoints.map {
-            toOffset(projectToMeters(it.latitude, it.longitude, referenceLat))
-        }
-        if (trackOffsets.size >= 2) {
-            for (i in 0 until trackOffsets.lastIndex) {
-                drawLine(
-                    color = Color(0xFFFFF176),
-                    start = trackOffsets[i],
-                    end = trackOffsets[i + 1],
-                    strokeWidth = 3f
-                )
-            }
-        }
-
-        if (anchorProjected != null) {
-            val anchorOffset = toOffset(anchorProjected)
-            val radiusPx = (radiusMeters.toFloat() * scale).coerceAtLeast(8f)
-            if (areaMode == AnchorAreaMode.Circle) {
-                drawCircle(
-                    color = if (alarmActive) Color(0xFFFF8A80) else Color(0xFF66BB6A),
-                    radius = radiusPx,
-                    center = anchorOffset,
-                    style = Stroke(width = 3f)
-                )
-            } else {
-                val apex = apexProjected ?: anchorProjected
-                val apexOffset = toOffset(apex)
-                val segStart = (segmentCenterDeg - segmentWidthDeg / 2.0 - 90.0).toFloat()
-                drawArc(
-                    color = if (alarmActive) Color(0x44FF8A80) else Color(0x4432CD32),
-                    startAngle = segStart,
-                    sweepAngle = segmentWidthDeg.toFloat(),
-                    useCenter = true,
-                    topLeft = Offset(apexOffset.x - radiusPx, apexOffset.y - radiusPx),
-                    size = androidx.compose.ui.geometry.Size(radiusPx * 2f, radiusPx * 2f)
-                )
-                drawArc(
-                    color = if (alarmActive) Color(0xFFFF8A80) else Color(0xFF66BB6A),
-                    startAngle = segStart,
-                    sweepAngle = segmentWidthDeg.toFloat(),
-                    useCenter = false,
-                    topLeft = Offset(apexOffset.x - radiusPx, apexOffset.y - radiusPx),
-                    size = androidx.compose.ui.geometry.Size(radiusPx * 2f, radiusPx * 2f),
-                    style = Stroke(width = 3f)
-                )
-                val leftEdgeDeg = segmentCenterDeg - segmentWidthDeg / 2.0
-                val rightEdgeDeg = segmentCenterDeg + segmentWidthDeg / 2.0
-                val leftVec = headingToUnitVector(normalizeDegrees(leftEdgeDeg))
-                val rightVec = headingToUnitVector(normalizeDegrees(rightEdgeDeg))
-                val edgeColor = if (alarmActive) Color(0xFFFF8A80) else Color(0xFF66BB6A)
-                drawLine(
-                    color = edgeColor,
-                    start = apexOffset,
-                    end = Offset(
-                        x = apexOffset.x + leftVec.x.toFloat() * radiusPx,
-                        y = apexOffset.y - leftVec.y.toFloat() * radiusPx
-                    ),
-                    strokeWidth = 3f
-                )
-                drawLine(
-                    color = edgeColor,
-                    start = apexOffset,
-                    end = Offset(
-                        x = apexOffset.x + rightVec.x.toFloat() * radiusPx,
-                        y = apexOffset.y - rightVec.y.toFloat() * radiusPx
-                    ),
-                    strokeWidth = 3f
-                )
-                // Cone apex marker.
-                drawCircle(
-                    color = Color(0xFFFFD54F),
-                    radius = 6f,
-                    center = apexOffset
-                )
-                // Visual connector between GPS/anchor point and cone apex.
-                drawLine(
-                    color = Color(0xFF7E7E7E),
-                    start = anchorOffset,
-                    end = apexOffset,
-                    strokeWidth = 2f
-                )
-            }
-            drawCircle(
-                color = Color(0xFF00BCD4),
-                radius = 8f,
-                center = anchorOffset
+            AnchoringOpenMap(
+                anchorLocation = anchorLocation,
+                currentLocation = currentLocation,
+                trackPoints = trackPoints,
+                radiusMeters = radiusMeters,
+                areaMode = areaMode,
+                segmentCenterDeg = segmentCenterDeg,
+                segmentWidthDeg = segmentWidthDeg,
+                coneApexOffsetMeters = coneApexOffsetMeters,
+                autoZoomEnabled = autoZoomEnabled,
+                modifier = Modifier.fillMaxSize()
             )
         }
-
-        if (currentProjected != null) {
-            drawCircle(
-                color = if (alarmActive) Color.Red else Color.White,
-                radius = 9f,
-                center = toOffset(currentProjected)
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp),
+            color = Color(0xAA000000)
+        ) {
+            Text(
+                text = if (renderMode == AnchorMapRenderMode.OpenMap) "OPEN MAP" else "CANVAS",
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp
+            )
+        }
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(8.dp),
+            color = Color(0xAA000000)
+        ) {
+            Text(
+                text = if (autoZoomEnabled) "AUTO ZOOM ON" else "AUTO ZOOM OFF",
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp
             )
         }
     }
+}
+
+@Composable
+private fun AnchoringOpenMap(
+    anchorLocation: Location?,
+    currentLocation: Location?,
+    trackPoints: List<RaceTrackPoint>,
+    radiusMeters: Double,
+    areaMode: AnchorAreaMode,
+    segmentCenterDeg: Double,
+    segmentWidthDeg: Double,
+    coneApexOffsetMeters: Double,
+    autoZoomEnabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    var hasAutoFitted by remember(
+        anchorLocation?.latitude,
+        anchorLocation?.longitude,
+        currentLocation?.latitude,
+        currentLocation?.longitude,
+        areaMode,
+        segmentCenterDeg,
+        segmentWidthDeg,
+        coneApexOffsetMeters,
+        radiusMeters,
+        autoZoomEnabled
+    ) { mutableStateOf(false) }
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
+            MapView(ctx).apply {
+                setTileSource(TileSourceFactory.MAPNIK)
+                setMultiTouchControls(true)
+                isTilesScaledToDpi = true
+                controller.setZoom(15.0)
+            }
+        },
+        update = { mapView ->
+            mapView.overlays.clear()
+            val conusApexLocation = if (anchorLocation != null && areaMode == AnchorAreaMode.Conus) {
+                offsetLocationByMeters(
+                    start = anchorLocation,
+                    bearingDeg = segmentCenterDeg,
+                    distanceMeters = coneApexOffsetMeters
+                )
+            } else {
+                null
+            }
+            val centerLocation = currentLocation ?: anchorLocation ?: conusApexLocation
+            if (autoZoomEnabled && !hasAutoFitted) {
+                val fitPoints = mutableListOf<GeoPoint>()
+                when (areaMode) {
+                    AnchorAreaMode.Circle -> {
+                        anchorLocation?.let { anchor ->
+                            fitPoints += GeoPoint(anchor.latitude, anchor.longitude)
+                            listOf(0.0, 90.0, 180.0, 270.0).forEach { bearing ->
+                                val edge = offsetLocationByMeters(
+                                    start = anchor,
+                                    bearingDeg = bearing,
+                                    distanceMeters = radiusMeters
+                                )
+                                fitPoints += GeoPoint(edge.latitude, edge.longitude)
+                            }
+                        }
+                    }
+                    AnchorAreaMode.Conus -> {
+                        conusApexLocation?.let { apex ->
+                            fitPoints += GeoPoint(apex.latitude, apex.longitude)
+                            val halfWidth = segmentWidthDeg / 2.0
+                            val startBearing = segmentCenterDeg - halfWidth
+                            val segments = max(12, (segmentWidthDeg / 6.0).roundToInt())
+                            for (i in 0..segments) {
+                                val bearing = startBearing + (segmentWidthDeg * i / segments.toDouble())
+                                val edge = offsetLocationByMeters(
+                                    start = apex,
+                                    bearingDeg = normalizeDegrees(bearing),
+                                    distanceMeters = radiusMeters
+                                )
+                                fitPoints += GeoPoint(edge.latitude, edge.longitude)
+                            }
+                        }
+                    }
+                }
+                if (fitPoints.size >= 2 && mapView.width > 0 && mapView.height > 0) {
+                    val maxLat = fitPoints.maxOf { it.latitude }
+                    val minLat = fitPoints.minOf { it.latitude }
+                    val maxLon = fitPoints.maxOf { it.longitude }
+                    val minLon = fitPoints.minOf { it.longitude }
+                    val bbox = BoundingBox(maxLat, maxLon, minLat, minLon)
+                    mapView.zoomToBoundingBox(bbox, true, 80)
+                    hasAutoFitted = true
+                } else {
+                    centerLocation?.let { mapView.controller.setCenter(GeoPoint(it.latitude, it.longitude)) }
+                }
+            } else if (!autoZoomEnabled) {
+                centerLocation?.let { mapView.controller.setCenter(GeoPoint(it.latitude, it.longitude)) }
+            }
+
+            if (trackPoints.size >= 2) {
+                val trackOverlay = Polyline(mapView).apply {
+                    outlinePaint.color = android.graphics.Color.YELLOW
+                    outlinePaint.strokeWidth = 4f
+                    setPoints(trackPoints.takeLast(500).map { GeoPoint(it.latitude, it.longitude) })
+                }
+                mapView.overlays.add(trackOverlay)
+            }
+            if (areaMode == AnchorAreaMode.Circle) {
+                anchorLocation?.let { center ->
+                    mapView.overlays.add(
+                        createOsmCircleOverlay(
+                            mapView = mapView,
+                            geoPoint = GeoPoint(center.latitude, center.longitude),
+                            fillColor = android.graphics.Color.argb(80, 102, 187, 106),
+                            strokeColor = android.graphics.Color.GREEN,
+                            radiusMeters = radiusMeters
+                        )
+                    )
+                }
+            } else if (conusApexLocation != null) {
+                val halfWidth = segmentWidthDeg / 2.0
+                val startBearing = segmentCenterDeg - halfWidth
+                val segments = max(12, (segmentWidthDeg / 6.0).roundToInt())
+                val sectorPoints = mutableListOf<GeoPoint>()
+                sectorPoints.add(GeoPoint(conusApexLocation.latitude, conusApexLocation.longitude))
+                for (i in 0..segments) {
+                    val bearing = startBearing + (segmentWidthDeg * i / segments.toDouble())
+                    val edgePoint = offsetLocationByMeters(
+                        start = conusApexLocation,
+                        bearingDeg = normalizeDegrees(bearing),
+                        distanceMeters = radiusMeters
+                    )
+                    sectorPoints.add(GeoPoint(edgePoint.latitude, edgePoint.longitude))
+                }
+                sectorPoints.add(GeoPoint(conusApexLocation.latitude, conusApexLocation.longitude))
+                mapView.overlays.add(
+                    Polygon(mapView).apply {
+                        points = sectorPoints
+                        fillPaint.color = android.graphics.Color.argb(80, 102, 187, 106)
+                        outlinePaint.color = android.graphics.Color.GREEN
+                        outlinePaint.strokeWidth = 3f
+                    }
+                )
+            }
+            if (anchorLocation != null && conusApexLocation != null && areaMode == AnchorAreaMode.Conus) {
+                val connector = Polyline(mapView).apply {
+                    outlinePaint.color = android.graphics.Color.GRAY
+                    outlinePaint.strokeWidth = 4f
+                    setPoints(
+                        listOf(
+                            GeoPoint(anchorLocation.latitude, anchorLocation.longitude),
+                            GeoPoint(conusApexLocation.latitude, conusApexLocation.longitude)
+                        )
+                    )
+                }
+                mapView.overlays.add(connector)
+            }
+            currentLocation?.let { boat ->
+                val boatMarker = Marker(mapView).apply {
+                    position = GeoPoint(boat.latitude, boat.longitude)
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    title = "Boat"
+                }
+                mapView.overlays.add(boatMarker)
+            }
+            mapView.invalidate()
+        }
+    )
 }
 
 @Composable
@@ -2924,31 +3400,6 @@ private fun StartLineMap(
                 }
             )
         }
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(end = 8.dp)
-        ) {
-            val oneThird = maxHeight / 3
-            Text(
-                text = "+",
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .offset(y = -oneThird),
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 22.sp
-            )
-            Text(
-                text = "-",
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .offset(y = oneThird),
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 22.sp
-            )
-        }
     }
 }
 
@@ -2990,10 +3441,11 @@ private fun createOsmCircleOverlay(
     mapView: MapView,
     geoPoint: GeoPoint,
     fillColor: Int,
-    strokeColor: Int
+    strokeColor: Int,
+    radiusMeters: Double = 6.0
 ): Polygon {
     return Polygon(mapView).apply {
-        points = Polygon.pointsAsCircle(geoPoint, 6.0)
+        points = Polygon.pointsAsCircle(geoPoint, radiusMeters)
         this.fillPaint.color = fillColor
         this.outlinePaint.color = strokeColor
         this.outlinePaint.strokeWidth = 3f
@@ -3718,14 +4170,38 @@ private fun TrackPreviewScreen(
     }
     var canvasUserScale by remember(trackName, trackPoints.size) { mutableFloatStateOf(1f) }
     var canvasUserPan by remember(trackName, trackPoints.size) { mutableStateOf(Offset.Zero) }
-    val topToggleAreaHeightPx = with(LocalDensity.current) { 56.dp.toPx() }
+    var openMapZoom by remember(trackName, trackPoints.size) { mutableFloatStateOf(15f) }
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(renderMode, trackPoints, topToggleAreaHeightPx) {
+            .pointerInput(renderMode, trackPoints) {
                 detectTapGestures(
+                    onTap = { tap ->
+                        val w = size.width.toFloat()
+                        val h = size.height.toFloat()
+                        val topHalf = tap.y < h / 2f
+                        val rightHalf = tap.x >= w / 2f
+                        val topLeftQuarter = tap.x < w / 2f && tap.y < h / 2f
+                        when {
+                            topLeftQuarter -> onToggleRenderMode()
+                            topHalf && rightHalf -> {
+                                if (renderMode == TrackPreviewRenderMode.OpenMap) {
+                                    openMapZoom = (openMapZoom + 1f).coerceIn(3f, 20f)
+                                } else {
+                                    canvasUserScale = (canvasUserScale * 1.15f).coerceIn(0.5f, 12f)
+                                }
+                            }
+                            !topHalf && rightHalf -> {
+                                if (renderMode == TrackPreviewRenderMode.OpenMap) {
+                                    openMapZoom = (openMapZoom - 1f).coerceIn(3f, 20f)
+                                } else {
+                                    canvasUserScale = (canvasUserScale / 1.15f).coerceIn(0.5f, 12f)
+                                }
+                            }
+                        }
+                    },
                     onDoubleTap = { tap ->
-                        if (tap.y > topToggleAreaHeightPx) {
+                        if (tap.y > size.height.toFloat() * 0.18f) {
                             onClose()
                         }
                     }
@@ -3738,6 +4214,7 @@ private fun TrackPreviewScreen(
                 leftBuoy = leftBuoy,
                 rightBuoy = rightBuoy,
                 raceStartPoint = raceStartPoint,
+                zoomLevel = openMapZoom,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -3759,20 +4236,63 @@ private fun TrackPreviewScreen(
 
         Surface(
             modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp),
+            color = Color(0xAA000000)
+        ) {
+            Text(
+                text = if (renderMode == TrackPreviewRenderMode.OpenMap) "Active: OpenMap" else "Active: Canvas",
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Surface(
+            modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(8.dp)
-                .pointerInput(renderMode) {
+                .pointerInput(renderMode, canvasUserScale, openMapZoom) {
                     detectTapGestures(
                         onTap = {
-                            onToggleRenderMode()
+                            if (renderMode == TrackPreviewRenderMode.OpenMap) {
+                                openMapZoom = (openMapZoom + 1f).coerceIn(3f, 20f)
+                            } else {
+                                canvasUserScale = (canvasUserScale * 1.15f).coerceIn(0.5f, 12f)
+                            }
                         }
                     )
                 },
             color = Color(0xAA000000)
         ) {
             Text(
-                text = "OpenMap",
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                text = "+",
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(8.dp)
+                .pointerInput(renderMode, canvasUserScale, openMapZoom) {
+                    detectTapGestures(
+                        onTap = {
+                            if (renderMode == TrackPreviewRenderMode.OpenMap) {
+                                openMapZoom = (openMapZoom - 1f).coerceIn(3f, 20f)
+                            } else {
+                                canvasUserScale = (canvasUserScale / 1.15f).coerceIn(0.5f, 12f)
+                            }
+                        }
+                    )
+                },
+            color = Color(0xAA000000)
+        ) {
+            Text(
+                text = "-",
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 color = Color.White,
                 fontWeight = FontWeight.Bold
             )
@@ -3903,6 +4423,7 @@ private fun TrackPreviewOpenMap(
     leftBuoy: Point2D?,
     rightBuoy: Point2D?,
     raceStartPoint: Point2D?,
+    zoomLevel: Float,
     modifier: Modifier = Modifier
 ) {
     AndroidView(
@@ -3913,11 +4434,12 @@ private fun TrackPreviewOpenMap(
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
                 isTilesScaledToDpi = true
-                controller.setZoom(15.0)
+                controller.setZoom(zoomLevel.toDouble())
             }
         },
         update = { mapView ->
             mapView.overlays.clear()
+            mapView.controller.setZoom(zoomLevel.toDouble())
             when {
                 trackPoints.isNotEmpty() -> {
                     val center = trackPoints[trackPoints.size / 2]

@@ -480,6 +480,8 @@ fun ActionButton(
     text: String,
     background: Color,
     modifier: Modifier = Modifier.height(56.dp),
+    fontSize: androidx.compose.ui.unit.TextUnit = 22.sp,
+    lineHeight: androidx.compose.ui.unit.TextUnit = 22.sp,
     onClick: () -> Unit = {}
 ) {
     Button(
@@ -494,7 +496,8 @@ fun ActionButton(
     ) {
         Text(
             text = text,
-            fontSize = 22.sp,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
             fontWeight = FontWeight.Bold
         )
     }
