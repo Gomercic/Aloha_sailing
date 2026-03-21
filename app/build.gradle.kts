@@ -1,6 +1,15 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties()
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 
 android {
@@ -21,6 +30,26 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKeystore) {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                    ?: error("keystore.properties: missing keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                    ?: error("keystore.properties: missing keyPassword")
+                storePassword = keystoreProperties.getProperty("storePassword")
+                    ?: error("keystore.properties: missing storePassword")
+                val storePath = keystoreProperties.getProperty("storeFile")
+                    ?: error("keystore.properties: missing storeFile")
+                val keystoreFile = rootProject.file(storePath)
+                require(keystoreFile.exists()) {
+                    "Keystore file not found: ${keystoreFile.absolutePath} (storeFile in keystore.properties)"
+                }
+                storeFile = keystoreFile
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -28,6 +57,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
@@ -59,4 +91,21 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+gradle.taskGraph.whenReady {
+    val wantsSignedRelease = allTasks.any { task ->
+        val p = task.path
+        p.endsWith(":assembleRelease") || p.endsWith(":bundleRelease")
+    }
+    if (wantsSignedRelease && !hasReleaseKeystore) {
+        throw GradleException(
+            """
+            Release signing is not configured.
+            1) Copy keystore.properties.example to keystore.properties
+            2) Create a keystore (see docs/RELEASE_SIGNING.md)
+            3) Fill in storeFile, passwords, and keyAlias in keystore.properties
+            """.trimIndent()
+        )
+    }
 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,6 +51,8 @@ import kotlinx.coroutines.delay
 private val BgBlack = Color(0xFF000000)
 private val PanelBlack = Color(0xFF111111)
 private val YellowText = Color(0xFFFFFF99)
+/** Štoperica nakon nule (odbrojavanje u plus). */
+private val CountdownOvertimeBlue = Color(0xFF90CAF9)
 private val GreenBtn = Color(0xFF4CAF50)
 private val RedBtn = Color(0xFFD32F2F)
 private val GreyBtn = Color(0xFF757575)
@@ -68,6 +71,8 @@ private val CompactSmallButtonPadding = PaddingValues(horizontal = 2.dp, vertica
 fun StartLine(
     headerContent: (@Composable () -> Unit)? = null,
     countdownDisplayText: String = "10:00",
+    /** Kad je true, brojke štoperice su nakon starta (vrijeme u plus) – svijetlo plave. */
+    countdownOvertimeActive: Boolean = false,
     isCountdownRunning: Boolean = false,
     speedDisplayText: String = "10 kn",
     leftBuoySet: Boolean = false,
@@ -189,7 +194,7 @@ fun StartLine(
 
                 Text(
                     text = countdownDisplayText,
-                    color = YellowText,
+                    color = if (countdownOvertimeActive) CountdownOvertimeBlue else YellowText,
                     fontSize = 90.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.pointerInput(onDoubleClickAction) {
@@ -258,7 +263,9 @@ fun StartLine(
                         text = "Reset\nStop REC",
                         fontSize = 8.sp,
                         lineHeight = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }

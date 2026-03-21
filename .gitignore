@@ -16,3 +16,9 @@ local.properties
 
 # NAS Docker tajne (lokalni .env za kopiranje na Synology)
 docker/.env
+
+# Release signing (nikad u git)
+keystore.properties
+release-keystore.jks
+*.jks
+*.keystore

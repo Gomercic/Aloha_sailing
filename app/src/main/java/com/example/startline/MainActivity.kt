@@ -164,8 +164,6 @@ fun StartLineScreen() {
     }
     var showExitConfirmDialog by rememberSaveable { mutableStateOf(false) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
-    var mapModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
-    var screenModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
     var windShiftSdDropdownExpanded by rememberSaveable { mutableStateOf(false) }
     var anchorAreaModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
     var screenMode by rememberSaveable { mutableStateOf(ScreenMode.Dark) }
@@ -229,6 +227,8 @@ fun StartLineScreen() {
     var remainingCountdownSeconds by remember {
         mutableLongStateOf(DEFAULT_COUNTDOWN_START_MINUTES * 60L)
     }
+    /** Sekunde nakon što je odbrojavanje došlo do 0; štoperica ide naprijed dok traje trka / dok se ne resetira. */
+    var postZeroElapsedSeconds by remember { mutableLongStateOf(0L) }
     var isCountdownRunning by remember { mutableStateOf(false) }
     var anchorLat by rememberSaveable { mutableStateOf<Double?>(null) }
     var anchorLon by rememberSaveable { mutableStateOf<Double?>(null) }
@@ -458,8 +458,20 @@ fun StartLineScreen() {
             )
         }
     }
-    val currentToAnchorDistanceMeters = remember(currentLocation, anchorLocation) {
-        val cur = currentLocation
+    /** U Receive + NAS sesiji: pozicija udaljenog broda (zadnja točka tracka). Inače lokalni GPS. */
+    val anchoringReferenceBoatLocation =
+        if (nasInternetRole == NasInternetRole.Receiving && nasInternetSessionActive) {
+            anchorTrackPoints.lastOrNull()?.let { p ->
+                Location("remote_track_tip").apply {
+                    latitude = p.latitude
+                    longitude = p.longitude
+                }
+            }
+        } else {
+            currentLocation
+        }
+    val currentToAnchorDistanceMeters = remember(anchoringReferenceBoatLocation, anchorLocation) {
+        val cur = anchoringReferenceBoatLocation
         val anc = anchorLocation
         if (cur != null && anc != null) {
             cur.distanceTo(anc).toDouble()
@@ -467,8 +479,8 @@ fun StartLineScreen() {
             null
         }
     }
-    val currentToAnchorBearingDeg = remember(currentLocation, anchorLocation) {
-        val cur = currentLocation
+    val currentToAnchorBearingDeg = remember(anchoringReferenceBoatLocation, anchorLocation) {
+        val cur = anchoringReferenceBoatLocation
         val anc = anchorLocation
         if (cur != null && anc != null) {
             normalizeDegrees(anc.bearingTo(cur).toDouble())
@@ -486,10 +498,10 @@ fun StartLineScreen() {
         anchorAreaMode,
         anchorLocation,
         anchorConusApexLocation,
-        currentLocation
+        anchoringReferenceBoatLocation
     ) {
         val anchor = anchorLocation
-        val boat = currentLocation
+        val boat = anchoringReferenceBoatLocation
         if (anchor == null || boat == null) {
             true
         } else {
@@ -587,7 +599,10 @@ fun StartLineScreen() {
 
     val etaDeltaSeconds = remember(etaToLineSeconds, remainingCountdownSeconds) {
         etaToLineSeconds?.let { eta ->
-            (eta - remainingCountdownSeconds.toDouble()).roundToInt()
+            // Nakon starta (0 na štoperici) u usporedbu s ETA ne ulazi više „preostalo do starta”.
+            val secondsUntilStart =
+                if (remainingCountdownSeconds > 0L) remainingCountdownSeconds.toDouble() else 0.0
+            (eta - secondsUntilStart).roundToInt()
         }
     }
     val hasDistanceAndEta = signedBowDistanceToLineMeters != null && etaDeltaSeconds != null
@@ -884,34 +899,35 @@ fun StartLineScreen() {
                     toneGenerator = countdownTone,
                     remainingSeconds = newRemaining
                 )
-            }
-            if (remainingCountdownSeconds <= 0L) {
-                if (windShiftStartElapsedRealtimeMs == null) {
-                    windShiftStartElapsedRealtimeMs = SystemClock.elapsedRealtime()
-                }
-                if (isTrackRecording && raceStartEpochMillis == null) {
-                    raceStartEpochMillis = System.currentTimeMillis()
-                    raceStartLat = currentLocation?.latitude
-                    raceStartLon = currentLocation?.longitude
-                    buoysLockedAfterRaceStart = true
-                    val interimExport = exportRaceTrackToGpx(
-                        context = context,
-                        points = raceTrackPoints,
-                        raceStartEpochMillis = raceStartEpochMillis,
-                        leftBuoyLat = leftBuoyLat,
-                        leftBuoyLon = leftBuoyLon,
-                        rightBuoyLat = rightBuoyLat,
-                        rightBuoyLon = rightBuoyLon,
-                        raceStartLat = raceStartLat,
-                        raceStartLon = raceStartLon
-                    )
-                    if (interimExport != null) {
-                        trackLogRefreshTick += 1
-                        trackExportStatus = "Interim GPX saved: ${interimExport.name}"
+                if (newRemaining == 0L) {
+                    if (windShiftStartElapsedRealtimeMs == null) {
+                        windShiftStartElapsedRealtimeMs = SystemClock.elapsedRealtime()
                     }
+                    if (isTrackRecording && raceStartEpochMillis == null) {
+                        raceStartEpochMillis = System.currentTimeMillis()
+                        raceStartLat = currentLocation?.latitude
+                        raceStartLon = currentLocation?.longitude
+                        buoysLockedAfterRaceStart = true
+                        val interimExport = exportRaceTrackToGpx(
+                            context = context,
+                            points = raceTrackPoints,
+                            raceStartEpochMillis = raceStartEpochMillis,
+                            leftBuoyLat = leftBuoyLat,
+                            leftBuoyLon = leftBuoyLon,
+                            rightBuoyLat = rightBuoyLat,
+                            rightBuoyLon = rightBuoyLon,
+                            raceStartLat = raceStartLat,
+                            raceStartLon = raceStartLon
+                        )
+                        if (interimExport != null) {
+                            trackLogRefreshTick += 1
+                            trackExportStatus = "Interim GPX saved: ${interimExport.name}"
+                        }
+                    }
+                    postZeroElapsedSeconds = 0L
                 }
-                remainingCountdownSeconds = 0L
-                isCountdownRunning = false
+            } else {
+                postZeroElapsedSeconds++
             }
         }
     }
@@ -1025,7 +1041,12 @@ fun StartLineScreen() {
                             menuColor = Color.White
                         )
                     },
-                    countdownDisplayText = formatCountdown(remainingCountdownSeconds),
+                    countdownDisplayText = formatCountdownOrOvertime(
+                        remainingCountdownSeconds,
+                        postZeroElapsedSeconds
+                    ),
+                    countdownOvertimeActive = remainingCountdownSeconds == 0L &&
+                        (postZeroElapsedSeconds > 0L || isCountdownRunning),
                     isCountdownRunning = isCountdownRunning,
                     speedDisplayText = String.format(Locale.US, "%.1f kn", speedKnots),
                     leftBuoySet = leftBuoySet,
@@ -1041,19 +1062,31 @@ fun StartLineScreen() {
                     statusFrameColor = statusFrameColor,
                     onDoubleClickAction = onDoubleClickAction,
                     onCountdownRound = {
+                        postZeroElapsedSeconds = 0L
                         remainingCountdownSeconds =
                             ((remainingCountdownSeconds + 30L) / 60L) * 60L
                     },
                     onCountdownStartStop = {
-                        if (remainingCountdownSeconds > 0L) {
+                        if (remainingCountdownSeconds > 0L ||
+                            postZeroElapsedSeconds > 0L ||
+                            isCountdownRunning
+                        ) {
                             isCountdownRunning = !isCountdownRunning
                         }
                     },
                     onCountdownMinus = {
-                        remainingCountdownSeconds =
-                            (remainingCountdownSeconds - 60L).coerceAtLeast(0L)
+                        if (remainingCountdownSeconds > 0L) {
+                            remainingCountdownSeconds =
+                                (remainingCountdownSeconds - 60L).coerceAtLeast(0L)
+                        } else {
+                            postZeroElapsedSeconds =
+                                (postZeroElapsedSeconds - 60L).coerceAtLeast(0L)
+                        }
                     },
                     onCountdownPlus = {
+                        if (remainingCountdownSeconds == 0L) {
+                            postZeroElapsedSeconds = 0L
+                        }
                         remainingCountdownSeconds += 60L
                     },
                     onCountdownReset = {
@@ -1086,6 +1119,7 @@ fun StartLineScreen() {
                         raceStartLat = null
                         raceStartLon = null
                         buoysLockedAfterRaceStart = false
+                        postZeroElapsedSeconds = 0L
                         remainingCountdownSeconds = countdownStartMinutes * 60L
                     },
                     onSpeedMinus = {
@@ -1147,10 +1181,21 @@ fun StartLineScreen() {
                             mapRenderMode = mapRenderMode,
                             mapZoom = mapZoom,
                             onToggleMapMode = {
-                                mapMode = if (mapMode == MapMode.NorthUp) {
-                                    MapMode.StartLineUp
-                                } else {
-                                    MapMode.NorthUp
+                                if (mapRenderMode != MapRenderMode.Osm) {
+                                    mapMode = if (mapMode == MapMode.NorthUp) {
+                                        MapMode.StartLineUp
+                                    } else {
+                                        MapMode.NorthUp
+                                    }
+                                }
+                            },
+                            onToggleCanvasOsmFromMap = {
+                                if (mapMode == MapMode.NorthUp) {
+                                    mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
+                                        MapRenderMode.Osm
+                                    } else {
+                                        MapRenderMode.Canvas
+                                    }
                                 }
                             },
                             onZoomIn = {
@@ -1669,7 +1714,7 @@ fun StartLineScreen() {
                         ) {
                             AnchoringMap(
                                 anchorLocation = anchorLocation,
-                                currentLocation = currentLocation,
+                                displayBoatLocation = anchoringReferenceBoatLocation,
                                 trackPoints = anchorTrackPoints,
                                 radiusMeters = anchorRadiusMeters,
                                 areaMode = anchorAreaMode,
@@ -2016,13 +2061,32 @@ fun StartLineScreen() {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
-                                .pointerInput(windShiftWindowMinutes) {
+                                .pointerInput(
+                                    windShiftWindowMinutes,
+                                    mapRenderMode,
+                                    windShiftTrackOrientation
+                                ) {
                                     detectTapGestures(
                                         onTap = { tap ->
                                             val topHalf = tap.y < size.height / 2f
+                                            val bottomHalf = !topHalf
                                             val leftHalf = tap.x < size.width / 2f
                                             val inRightHalf = tap.x >= size.width / 2f
+                                            if (leftHalf && bottomHalf) {
+                                                if (windShiftTrackOrientation != WindShiftTrackOrientation.NorthUp) {
+                                                    return@detectTapGestures
+                                                }
+                                                mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
+                                                    MapRenderMode.Osm
+                                                } else {
+                                                    MapRenderMode.Canvas
+                                                }
+                                                return@detectTapGestures
+                                            }
                                             if (leftHalf && topHalf) {
+                                                if (mapRenderMode == MapRenderMode.Osm) {
+                                                    return@detectTapGestures
+                                                }
                                                 windShiftTrackOrientation =
                                                     if (windShiftTrackOrientation == WindShiftTrackOrientation.NorthUp) {
                                                         WindShiftTrackOrientation.WindAxisUp
@@ -2047,19 +2111,58 @@ fun StartLineScreen() {
                             border = BorderStroke(1.dp, Color(0xFF4A4A4A)),
                             tonalElevation = 0.dp
                         ) {
-                            WindShiftTrackGraph(
-                                samples = gpsSamples,
-                                activeWindowMinutes = windShiftWindowMinutes,
-                                historyMinutes = trackHistoryMinutes,
-                                orientation = windShiftTrackOrientation,
-                                referenceCourseDeg = windShiftReferenceCourseDeg,
-                                onResetActiveWindow = {
-                                    applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES)
-                                },
+                            Box(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(2.dp)
-                            )
+                            ) {
+                                if (mapRenderMode == MapRenderMode.Canvas) {
+                                    WindShiftTrackGraph(
+                                        samples = gpsSamples,
+                                        activeWindowMinutes = windShiftWindowMinutes,
+                                        historyMinutes = trackHistoryMinutes,
+                                        orientation = windShiftTrackOrientation,
+                                        referenceCourseDeg = windShiftReferenceCourseDeg,
+                                        onResetActiveWindow = {
+                                            applyWindShiftWindowMinutes(DEFAULT_WIND_SHIFT_WINDOW_MINUTES)
+                                        },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    WindShiftTrackOsmMap(
+                                        samples = gpsSamples,
+                                        activeWindowMinutes = windShiftWindowMinutes,
+                                        historyMinutes = trackHistoryMinutes,
+                                        mapZoom = mapZoom,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                    Text(
+                                        text = "${windShiftWindowMinutes} min",
+                                        modifier = Modifier
+                                            .align(Alignment.CenterEnd)
+                                            .padding(end = 8.dp)
+                                            .pointerInput(windShiftWindowMinutes) {
+                                                detectTapGestures(
+                                                    onDoubleTap = {
+                                                        applyWindShiftWindowMinutes(
+                                                            DEFAULT_WIND_SHIFT_WINDOW_MINUTES
+                                                        )
+                                                    }
+                                                )
+                                            },
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "North up",
+                                        modifier = Modifier
+                                            .align(Alignment.TopStart)
+                                            .padding(start = 8.dp, top = 8.dp),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     }
                     return@Column
@@ -2268,6 +2371,7 @@ fun StartLineScreen() {
                                                 countdownStartError = null
                                                 countdownStartMinutes = parsed
                                                 if (!isCountdownRunning) {
+                                                    postZeroElapsedSeconds = 0L
                                                     remainingCountdownSeconds = parsed * 60L
                                                 }
                                             }
@@ -2286,6 +2390,7 @@ fun StartLineScreen() {
                                         countdownStartInput = DEFAULT_COUNTDOWN_START_MINUTES.toString()
                                         countdownStartError = null
                                         if (!isCountdownRunning) {
+                                            postZeroElapsedSeconds = 0L
                                             remainingCountdownSeconds = DEFAULT_COUNTDOWN_START_MINUTES * 60L
                                         }
                                     },
@@ -2596,82 +2701,6 @@ fun StartLineScreen() {
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Podloga karte:")
-                                Box {
-                                    Button(
-                                        onClick = { mapModeDropdownExpanded = true },
-                                        modifier = Modifier.height(32.dp),
-                                        shape = settingsButtonShape,
-                                        colors = settingsButtonColors
-                                    ) {
-                                        Text(if (mapRenderMode == MapRenderMode.Canvas) "Canvas" else "OSM", fontSize = 11.sp)
-                                    }
-                                    DropdownMenu(
-                                        expanded = mapModeDropdownExpanded,
-                                        onDismissRequest = { mapModeDropdownExpanded = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Canvas") },
-                                            onClick = {
-                                                mapRenderMode = MapRenderMode.Canvas
-                                                mapModeDropdownExpanded = false
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("OSM") },
-                                            onClick = {
-                                                mapRenderMode = MapRenderMode.Osm
-                                                mapModeDropdownExpanded = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Screen mode:")
-                                Box {
-                                    Button(
-                                        onClick = { screenModeDropdownExpanded = true },
-                                        modifier = Modifier.height(32.dp),
-                                        shape = settingsButtonShape,
-                                        colors = settingsButtonColors
-                                    ) {
-                                        Text(if (screenMode == ScreenMode.Light) "Bijeli" else "Crni", fontSize = 11.sp)
-                                    }
-                                    DropdownMenu(
-                                        expanded = screenModeDropdownExpanded,
-                                        onDismissRequest = { screenModeDropdownExpanded = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Bijeli") },
-                                            onClick = {
-                                                screenMode = ScreenMode.Light
-                                                screenModeDropdownExpanded = false
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Crni") },
-                                            onClick = {
-                                                screenMode = ScreenMode.Dark
-                                                screenModeDropdownExpanded = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-
                             Spacer(modifier = Modifier.height(120.dp))
                         }
                     }
@@ -2943,6 +2972,15 @@ private fun formatCountdown(totalSeconds: Long): String {
     return String.format(Locale.US, "%02d:%02d", minutes, seconds)
 }
 
+/** Prije nule: preostalo; na/poslije nule: proteklo od starta (00:00, 00:01, …). */
+private fun formatCountdownOrOvertime(remainingCountdownSeconds: Long, postZeroElapsedSeconds: Long): String {
+    return if (remainingCountdownSeconds > 0L) {
+        formatCountdown(remainingCountdownSeconds)
+    } else {
+        formatCountdown(postZeroElapsedSeconds)
+    }
+}
+
 private fun playCountdownCue(toneGenerator: ToneGenerator, remainingSeconds: Long) {
     if (remainingSeconds <= 0L) {
         toneGenerator.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 3_000)
@@ -3171,7 +3209,8 @@ private fun isAngleInsideSegment(angleDeg: Double, centerDeg: Double, widthDeg: 
 @Composable
 private fun AnchoringMap(
     anchorLocation: Location?,
-    currentLocation: Location?,
+    /** Na karti: u Receive + aktivnoj sesiji = zadnja točka remote tracka; inače GPS ovog uređaja. */
+    displayBoatLocation: Location?,
     trackPoints: List<RaceTrackPoint>,
     radiusMeters: Double,
     areaMode: AnchorAreaMode,
@@ -3227,7 +3266,7 @@ private fun AnchoringMap(
             ) {
                 val allLocations = buildList {
                     if (anchorLocation != null) add(anchorLocation)
-                    if (currentLocation != null) add(currentLocation)
+                    if (displayBoatLocation != null) add(displayBoatLocation)
                     trackPoints.forEach { p ->
                         add(
                             Location("anchor_track").apply {
@@ -3266,7 +3305,7 @@ private fun AnchoringMap(
                 val projected = allLocations.map { projectToMeters(it, referenceLat) }.toMutableList()
                 val anchorProjected = anchorLocation?.let { projectToMeters(it, referenceLat) }
                 val apexProjected = conusApexLocation?.let { projectToMeters(it, referenceLat) }
-                val currentProjected = currentLocation?.let { projectToMeters(it, referenceLat) }
+                val currentProjected = displayBoatLocation?.let { projectToMeters(it, referenceLat) }
                 val radiusCenter = if (areaMode == AnchorAreaMode.Conus) apexProjected ?: anchorProjected else anchorProjected
                 if (radiusCenter != null) {
                     projected += Point2D(radiusCenter.x - radiusMeters, radiusCenter.y - radiusMeters)
@@ -3392,7 +3431,7 @@ private fun AnchoringMap(
         } else {
             AnchoringOpenMap(
                 anchorLocation = anchorLocation,
-                currentLocation = currentLocation,
+                displayBoatLocation = displayBoatLocation,
                 trackPoints = trackPoints,
                 radiusMeters = radiusMeters,
                 areaMode = areaMode,
@@ -3437,7 +3476,7 @@ private fun AnchoringMap(
 @Composable
 private fun AnchoringOpenMap(
     anchorLocation: Location?,
-    currentLocation: Location?,
+    displayBoatLocation: Location?,
     trackPoints: List<RaceTrackPoint>,
     radiusMeters: Double,
     areaMode: AnchorAreaMode,
@@ -3450,8 +3489,8 @@ private fun AnchoringOpenMap(
     var hasAutoFitted by remember(
         anchorLocation?.latitude,
         anchorLocation?.longitude,
-        currentLocation?.latitude,
-        currentLocation?.longitude,
+        displayBoatLocation?.latitude,
+        displayBoatLocation?.longitude,
         areaMode,
         segmentCenterDeg,
         segmentWidthDeg,
@@ -3481,7 +3520,7 @@ private fun AnchoringOpenMap(
             } else {
                 null
             }
-            val centerLocation = currentLocation ?: anchorLocation ?: conusApexLocation
+            val centerLocation = displayBoatLocation ?: anchorLocation ?: conusApexLocation
             if (autoZoomEnabled && !hasAutoFitted) {
                 val fitPoints = mutableListOf<GeoPoint>()
                 when (areaMode) {
@@ -3589,7 +3628,7 @@ private fun AnchoringOpenMap(
                 }
                 mapView.overlays.add(connector)
             }
-            currentLocation?.let { boat ->
+            displayBoatLocation?.let { boat ->
                 val boatMarker = Marker(mapView).apply {
                     position = GeoPoint(boat.latitude, boat.longitude)
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -3613,25 +3652,29 @@ private fun StartLineMap(
     mapRenderMode: MapRenderMode,
     mapZoom: Float,
     onToggleMapMode: () -> Unit,
+    /** Dvostruki tap lijevo-dolje: Canvas ↔ OSM samo kad je North up. */
+    onToggleCanvasOsmFromMap: () -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(mapMode, mapZoom) {
+            .pointerInput(mapMode, mapZoom, mapRenderMode) {
                 detectTapGestures(
                     onDoubleTap = { tap ->
                         val w = size.width.toFloat()
                         val h = size.height.toFloat()
                         val topHalf = tap.y < h / 2f
+                        val bottomHalf = !topHalf
                         val rightHalf = tap.x >= w / 2f
                         val leftHalf = tap.x < w / 2f
 
                         when {
                             topHalf && leftHalf -> onToggleMapMode()
                             topHalf && rightHalf -> onZoomIn()
-                            !topHalf && rightHalf -> onZoomOut()
+                            bottomHalf && rightHalf -> onZoomOut()
+                            bottomHalf && leftHalf -> onToggleCanvasOsmFromMap()
                         }
                     }
                 )
@@ -3786,7 +3829,9 @@ private fun StartLineMap(
                     } else {
                         0.0
                     }
-                    mapView.mapOrientation = if (mapMode == MapMode.StartLineUp) {
+                    mapView.mapOrientation = if (mapRenderMode == MapRenderMode.Osm) {
+                        0f
+                    } else if (mapMode == MapMode.StartLineUp) {
                         -lineBearing.toFloat()
                     } else {
                         0f
@@ -4403,6 +4448,75 @@ private fun WindShiftDeviationGraph(
 
         }
     }
+}
+
+@Composable
+private fun WindShiftTrackOsmMap(
+    samples: List<GpsSample>,
+    activeWindowMinutes: Long,
+    historyMinutes: Long,
+    mapZoom: Float,
+    modifier: Modifier = Modifier
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
+            MapView(ctx).apply {
+                setTileSource(TileSourceFactory.MAPNIK)
+                setMultiTouchControls(false)
+                isTilesScaledToDpi = true
+                mapOrientation = 0f
+                controller.setZoom(15.0)
+            }
+        },
+        update = { mapView ->
+            mapView.mapOrientation = 0f
+            val sorted = samples.sortedBy { it.timestampMs }
+            if (sorted.size < 2) {
+                mapView.overlays.clear()
+                mapView.invalidate()
+                return@AndroidView
+            }
+            val latestTs = sorted.last().timestampMs
+            val historyStart = latestTs - historyMinutes * 60_000L
+            val visible = sorted.filter { it.timestampMs >= historyStart }
+            if (visible.size < 2) {
+                mapView.overlays.clear()
+                mapView.invalidate()
+                return@AndroidView
+            }
+            val activeStart = latestTs - activeWindowMinutes * 60_000L
+            val latestLoc = visible.last().location
+            val zoomLevel = (16.0 + kotlin.math.log2(mapZoom.toDouble())).coerceIn(3.0, 20.0)
+            mapView.controller.setZoom(zoomLevel)
+            mapView.controller.setCenter(GeoPoint(latestLoc.latitude, latestLoc.longitude))
+            mapView.overlays.clear()
+            val historyPoints = visible.map { GeoPoint(it.location.latitude, it.location.longitude) }
+            mapView.overlays.add(
+                Polyline(mapView).apply {
+                    outlinePaint.color = android.graphics.Color.rgb(109, 143, 168)
+                    outlinePaint.strokeWidth = 6f
+                    setPoints(historyPoints)
+                }
+            )
+            val activeVisible = visible.filter { it.timestampMs >= activeStart }
+            if (activeVisible.size >= 2) {
+                mapView.overlays.add(
+                    Polyline(mapView).apply {
+                        outlinePaint.color = android.graphics.Color.rgb(199, 245, 255)
+                        outlinePaint.strokeWidth = 12f
+                        setPoints(
+                            activeVisible.map {
+                                GeoPoint(it.location.latitude, it.location.longitude)
+                            }
+                        )
+                    }
+                )
+            }
+            mapView.invalidate()
+        }
+    )
 }
 
 @Composable
