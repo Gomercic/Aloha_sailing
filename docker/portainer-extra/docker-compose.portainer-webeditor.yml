@@ -1,0 +1,50 @@
+# Za Portainer kad zalijepiš SAMO YML (bez Dockerfile na disku).
+# Prije deploya zamijeni REPLACE_GITHUB_USER, REPLACE_REPO (ime repoa), REPLACE_BRANCH (main/master).
+#
+# Uvjet: repozitorij mora biti JAVAN na GitHubu (raw.githubusercontent.com mora vratiti main.py).
+# Privatni repo → koristi Portainer "Repository" stack (klon cijelog projekta) umjesto ovoga.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: startline-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-startline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-startline}
+    volumes:
+      - startline_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    container_name: startline-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-startline}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-startline}
+      API_KEY: ${API_KEY:?Set API_KEY}
+    ports:
+      - "${API_HOST_PORT:-8080}:8000"
+    build:
+      dockerfile_inline: |
+        FROM python:3.12-slim
+        WORKDIR /app
+        ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+        RUN pip install --no-cache-dir \
+            fastapi==0.115.6 \
+            "uvicorn[standard]==0.34.0" \
+            sqlalchemy==2.0.36 \
+            "psycopg[binary]==3.2.3"
+        ADD "https://raw.githubusercontent.com/REPLACE_GITHUB_USER/REPLACE_REPO/REPLACE_BRANCH/docker/main.py" /app/main.py
+        EXPOSE 8000
+        CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+volumes:
+  startline_pgdata:

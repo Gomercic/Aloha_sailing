@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# NAS Docker tajne (lokalni .env za kopiranje na Synology)
+docker/.env

@@ -96,16 +96,25 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.example.startline.nas.NasAnchoringPayload
+import com.example.startline.nas.NasCallResult
+import com.example.startline.nas.NasSyncPreferences
+import com.example.startline.nas.NasTelemetryClient
+import com.example.startline.nas.NasTrackPoint
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -255,6 +264,42 @@ fun StartLineScreen() {
     var anchorTrackPoints by remember { mutableStateOf<List<RaceTrackPoint>>(emptyList()) }
     var anchorLastTrackLogEpochMs by remember { mutableLongStateOf(0L) }
 
+    val nasPrefs = remember(context) { NasSyncPreferences(context) }
+    val nasClient = remember { NasTelemetryClient() }
+    var nasShipCodeInput by remember { mutableStateOf("") }
+    /** Mrežna greška pri NAS syncu; uspjeh prikazuje se u aktivnost-liniji ispod. */
+    var nasInternetError by remember { mutableStateOf<String?>(null) }
+    var nasInternetSessionActive by remember { mutableStateOf(false) }
+    var nasInternetRole by remember { mutableStateOf(NasInternetRole.Sending) }
+    var nasInternetRoleMenuExpanded by remember { mutableStateOf(false) }
+    var nasSessionStartElapsedMs by remember { mutableLongStateOf(0L) }
+    var nasSendingOkCount by remember { mutableIntStateOf(0) }
+    var nasReceivingOkCount by remember { mutableIntStateOf(0) }
+    var nasUiTick by remember { mutableIntStateOf(0) }
+    var showNasReceiveConfirmDialog by remember { mutableStateOf(false) }
+    /** Kad je false, ispod naslova se ne prikazuju ship code / mod / Start (osim ako je sesija ili dijalog aktivan). */
+    var nasInternetSectionExpanded by remember { mutableStateOf(false) }
+    val nasSkipLocalTrackLog = remember { AtomicBoolean(false) }
+    LaunchedEffect(Unit) {
+        nasShipCodeInput = nasPrefs.shipCode
+    }
+    SideEffect {
+        nasSkipLocalTrackLog.set(
+            nasInternetRole == NasInternetRole.Receiving && nasInternetSessionActive
+        )
+    }
+
+    val nasUAnchorLat by rememberUpdatedState(anchorLat)
+    val nasUAnchorLon by rememberUpdatedState(anchorLon)
+    val nasUAnchorAreaMode by rememberUpdatedState(anchorAreaMode)
+    val nasUAnchorRadius by rememberUpdatedState(anchorRadiusMeters)
+    val nasUSegCenter by rememberUpdatedState(anchorSegmentCenterDeg)
+    val nasUSegWidth by rememberUpdatedState(anchorSegmentWidthDeg)
+    val nasUConeApex by rememberUpdatedState(anchorConeApexOffsetMeters)
+    val nasUAlarm by rememberUpdatedState(anchorAlarmEnabled)
+    val nasUTrack by rememberUpdatedState(anchorTrackPoints)
+    val nasURole by rememberUpdatedState(nasInternetRole)
+
     val countdownTone = remember { ToneGenerator(AudioManager.STREAM_ALARM, 100) }
     val anchorAlarmTone = remember { ToneGenerator(AudioManager.STREAM_ALARM, 100) }
     val fusedLocationClient = remember {
@@ -269,7 +314,10 @@ fun StartLineScreen() {
                     val now = SystemClock.elapsedRealtime()
                     gpsSamples = (gpsSamples + GpsSample(now, Location(latestLocation)))
                         .filter { now - it.timestampMs <= MAX_GPS_SAMPLE_AGE_MS }
-                    if (anchorLat != null && anchorLon != null) {
+                    if (
+                        anchorLat != null && anchorLon != null &&
+                        !nasSkipLocalTrackLog.get()
+                    ) {
                         val epochNow = System.currentTimeMillis()
                         if (
                             anchorLastTrackLogEpochMs == 0L ||
@@ -302,6 +350,13 @@ fun StartLineScreen() {
         val coarseGranted = result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         hasLocationPermission = fineGranted || coarseGranted
         permissionDenied = !hasLocationPermission
+    }
+
+    LaunchedEffect(Unit) {
+        ContextCompat.startForegroundService(
+            context,
+            Intent(context, RuntimeForegroundService::class.java)
+        )
     }
 
     LaunchedEffect(Unit) {
@@ -558,6 +613,95 @@ fun StartLineScreen() {
     }
 
     val onDoubleClickAction = rememberDoubleClickAction(timeoutMs = doubleClickTimeoutMs)
+    LaunchedEffect(currentScreen, nasInternetSessionActive) {
+        if (currentScreen != AppScreen.Anchoring || !nasInternetSessionActive) return@LaunchedEffect
+        while (true) {
+            val ship = nasPrefs.shipCode
+            if (ship.isNotBlank()) {
+                when (nasURole) {
+                    NasInternetRole.Sending -> {
+                        val areaModeStr = when (nasUAnchorAreaMode) {
+                            AnchorAreaMode.Circle -> "circle"
+                            AnchorAreaMode.Conus -> "conus"
+                        }
+                        val trackForNas = nasUTrack.takeLast(200).map {
+                            NasTrackPoint(it.latitude, it.longitude, it.epochMillis)
+                        }
+                        val payload = NasAnchoringPayload(
+                            anchorLat = nasUAnchorLat,
+                            anchorLon = nasUAnchorLon,
+                            areaMode = areaModeStr,
+                            radiusMeters = nasUAnchorRadius,
+                            segmentCenterDeg = nasUSegCenter,
+                            segmentWidthDeg = nasUSegWidth,
+                            coneApexOffsetMeters = nasUConeApex,
+                            alarmEnabled = nasUAlarm,
+                            trackPoints = trackForNas
+                        )
+                        when (
+                            val r = withContext(Dispatchers.IO) {
+                                nasClient.putAnchoring(
+                                    nasPrefs.baseUrl,
+                                    nasPrefs.apiKey,
+                                    ship,
+                                    payload
+                                )
+                            }
+                        ) {
+                            is NasCallResult.Ok -> {
+                                nasSendingOkCount++
+                                nasInternetError = null
+                            }
+                            is NasCallResult.Err ->
+                                nasInternetError = r.message
+                        }
+                    }
+                    NasInternetRole.Receiving -> {
+                        when (
+                            val r = withContext(Dispatchers.IO) {
+                                nasClient.getAnchoring(
+                                    nasPrefs.baseUrl,
+                                    nasPrefs.apiKey,
+                                    ship
+                                )
+                            }
+                        ) {
+                            is NasCallResult.Ok -> {
+                                val p = r.value
+                                if (p.anchorLat != null && p.anchorLon != null) {
+                                    anchorLat = p.anchorLat
+                                    anchorLon = p.anchorLon
+                                }
+                                if (p.trackPoints.isNotEmpty()) {
+                                    anchorTrackPoints = p.trackPoints.map { tp ->
+                                        RaceTrackPoint(
+                                            latitude = tp.latitude,
+                                            longitude = tp.longitude,
+                                            epochMillis = tp.epochMillis
+                                        )
+                                    }
+                                    anchorLastTrackLogEpochMs =
+                                        p.trackPoints.maxOf { it.epochMillis }
+                                }
+                                nasReceivingOkCount++
+                                nasInternetError = null
+                            }
+                            is NasCallResult.Err ->
+                                nasInternetError = r.message
+                        }
+                    }
+                }
+            }
+            delay(NAS_INTERNET_SYNC_INTERVAL_MS)
+        }
+    }
+    LaunchedEffect(nasInternetSessionActive, currentScreen) {
+        if (!nasInternetSessionActive || currentScreen != AppScreen.Anchoring) return@LaunchedEffect
+        while (true) {
+            delay(1_000L)
+            nasUiTick++
+        }
+    }
     val settingsScrollState = rememberScrollState()
     val trackLogScrollState = rememberScrollState()
     val windDebugScrollState = rememberScrollState()
@@ -804,6 +948,11 @@ fun StartLineScreen() {
                             onClick = {
                                 showExitConfirmDialog = false
                                 MainActivity.hasShownWelcomeForCurrentProcess = false
+                                context.startService(
+                                    Intent(context, RuntimeForegroundService::class.java).apply {
+                                        action = RuntimeForegroundService.ACTION_STOP_SERVICE
+                                    }
+                                )
                                 activity?.finish()
                             }
                         ) {
@@ -1163,35 +1312,72 @@ fun StartLineScreen() {
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            ActionButton(
-                                text = "Set anchor",
-                                background = Color(0xFF2E7D32),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(56.dp),
-                                fontSize = 14.sp,
-                                lineHeight = 14.sp,
-                                onClick = {
-                                    if (anchorLocation != null) {
-                                        showSetNewAnchorDialog = true
-                                    } else {
-                                        val snapshot = anchorSetLocationAverage
-                                        if (snapshot != null) {
-                                            anchorLat = snapshot.latitude
-                                            anchorLon = snapshot.longitude
-                                            anchorTrackPoints = listOf(
-                                                RaceTrackPoint(
-                                                    latitude = snapshot.latitude,
-                                                    longitude = snapshot.longitude,
-                                                    epochMillis = System.currentTimeMillis()
-                                                )
+                            val nasReceiveRemoteBlocksManual =
+                                nasInternetRole == NasInternetRole.Receiving && nasInternetSessionActive
+                            fun onSetAnchorClick() {
+                                if (nasReceiveRemoteBlocksManual) return
+                                if (anchorLocation != null) {
+                                    showSetNewAnchorDialog = true
+                                } else {
+                                    val snapshot = anchorSetLocationAverage
+                                    if (snapshot != null) {
+                                        anchorLat = snapshot.latitude
+                                        anchorLon = snapshot.longitude
+                                        anchorTrackPoints = listOf(
+                                            RaceTrackPoint(
+                                                latitude = snapshot.latitude,
+                                                longitude = snapshot.longitude,
+                                                epochMillis = System.currentTimeMillis()
                                             )
-                                            anchorLastTrackLogEpochMs = System.currentTimeMillis()
-                                            anchorAlarmEnabled = true
-                                        }
+                                        )
+                                        anchorLastTrackLogEpochMs = System.currentTimeMillis()
+                                        anchorAlarmEnabled = true
                                     }
                                 }
-                            )
+                            }
+                            if (nasInternetRole == NasInternetRole.Receiving) {
+                                Button(
+                                    onClick = { onSetAnchorClick() },
+                                    enabled = !nasReceiveRemoteBlocksManual,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(56.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFFFF8F00),
+                                        contentColor = Color.White,
+                                        disabledContainerColor = Color(0xFF8D5A00),
+                                        disabledContentColor = Color(0xFFE0E0E0)
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = "Anchor location is set",
+                                            fontSize = 9.sp,
+                                            lineHeight = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "by remote boat",
+                                            fontSize = 9.sp,
+                                            lineHeight = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            } else {
+                                ActionButton(
+                                    text = "Set anchor",
+                                    background = Color(0xFF2E7D32),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(56.dp),
+                                    fontSize = 14.sp,
+                                    lineHeight = 14.sp,
+                                    onClick = { onSetAnchorClick() }
+                                )
+                            }
                             Button(
                                 onClick = {
                                     if (anchorAlarmEnabled) {
@@ -1509,7 +1695,261 @@ fun StartLineScreen() {
                                 }
                             )
                         }
-                        Spacer(modifier = Modifier.weight(0.5f))
+                        HorizontalDivider(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            color = Color(0xFF5C5C5C),
+                            thickness = 1.dp
+                        )
+                        val nasInternetDetailsVisible =
+                            nasInternetSectionExpanded ||
+                                nasInternetSessionActive ||
+                                showNasReceiveConfirmDialog
+                        Button(
+                            onClick = {
+                                if (nasInternetSessionActive || showNasReceiveConfirmDialog) return@Button
+                                nasInternetSectionExpanded = !nasInternetSectionExpanded
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(0.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (nasInternetDetailsVisible) {
+                                    Color(0xFF3A3A3A)
+                                } else {
+                                    Color(0xFF2C2C2C)
+                                },
+                                contentColor = Color.White
+                            ),
+                            contentPadding = PaddingValues(vertical = 14.dp, horizontal = 10.dp)
+                        ) {
+                            Text(
+                                text = "Follow anchoring via internet",
+                                fontSize = 16.sp,
+                                lineHeight = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (nasInternetDetailsVisible) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val nasShipFieldTextStyle = LocalTextStyle.current.copy(
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            lineHeight = 14.sp
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Enter Ship Code: ",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            OutlinedTextField(
+                                value = nasShipCodeInput,
+                                onValueChange = { if (!nasInternetSessionActive) nasShipCodeInput = it },
+                                enabled = !nasInternetSessionActive,
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                                colors = anchorInputColors,
+                                textStyle = nasShipFieldTextStyle,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 40.dp)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                Button(
+                                    onClick = {
+                                        if (!nasInternetSessionActive) {
+                                            nasInternetRoleMenuExpanded = true
+                                        }
+                                    },
+                                    enabled = !nasInternetSessionActive,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(44.dp),
+                                    colors = compactButtonColors,
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(nasInternetRole.label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                DropdownMenu(
+                                    expanded = nasInternetRoleMenuExpanded,
+                                    onDismissRequest = { nasInternetRoleMenuExpanded = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(NasInternetRole.Sending.label, fontSize = 12.sp) },
+                                        onClick = {
+                                            nasInternetRole = NasInternetRole.Sending
+                                            nasInternetRoleMenuExpanded = false
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(NasInternetRole.Receiving.label, fontSize = 12.sp) },
+                                        onClick = {
+                                            nasInternetRole = NasInternetRole.Receiving
+                                            nasInternetRoleMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = {
+                                    if (nasInternetSessionActive) {
+                                        onDoubleClickAction("nas_internet_stop") {
+                                            nasInternetSessionActive = false
+                                            nasSessionStartElapsedMs = 0L
+                                            nasSendingOkCount = 0
+                                            nasReceivingOkCount = 0
+                                            nasInternetError = null
+                                        }
+                                    } else {
+                                        val code = nasShipCodeInput.trim()
+                                        if (code.isBlank()) {
+                                            nasInternetError = "Enter ship code."
+                                            return@Button
+                                        }
+                                        nasInternetError = null
+                                        if (nasInternetRole == NasInternetRole.Receiving) {
+                                            showNasReceiveConfirmDialog = true
+                                        } else {
+                                            nasPrefs.saveShipCode(code)
+                                            nasSessionStartElapsedMs = SystemClock.elapsedRealtime()
+                                            nasSendingOkCount = 0
+                                            nasReceivingOkCount = 0
+                                            nasInternetSessionActive = true
+                                        }
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (nasInternetSessionActive) {
+                                        Color(0xFFD32F2F)
+                                    } else {
+                                        Color(0xFF2E7D32)
+                                    },
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                            ) {
+                                if (nasInternetSessionActive) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = "STOP",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "(double click)",
+                                            fontSize = 8.sp,
+                                            lineHeight = 9.sp
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text = "Start",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        if (nasInternetSessionActive && nasSessionStartElapsedMs > 0L) {
+                            val nasActivityLineText = remember(
+                                nasInternetSessionActive,
+                                nasSessionStartElapsedMs,
+                                nasInternetRole,
+                                nasSendingOkCount,
+                                nasReceivingOkCount,
+                                nasUiTick
+                            ) {
+                                val sec =
+                                    (SystemClock.elapsedRealtime() - nasSessionStartElapsedMs)
+                                        .coerceAtLeast(0L) / 1000L
+                                when (nasInternetRole) {
+                                    NasInternetRole.Sending ->
+                                        "Sending… $nasSendingOkCount updates · " +
+                                            formatNasSessionDuration(sec)
+                                    NasInternetRole.Receiving ->
+                                        "Receiving… $nasReceivingOkCount updates · " +
+                                            formatNasSessionDuration(sec)
+                                }
+                            }
+                            Text(
+                                text = nasActivityLineText,
+                                color = Color(0xFFB8E0D0),
+                                fontSize = 11.sp,
+                                lineHeight = 12.sp,
+                                modifier = Modifier.padding(top = 6.dp)
+                            )
+                        }
+                        nasInternetError?.let { err ->
+                            Text(
+                                text = err,
+                                color = Color(0xFFFF8A80),
+                                fontSize = 10.sp,
+                                lineHeight = 11.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                        if (showNasReceiveConfirmDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showNasReceiveConfirmDialog = false },
+                                containerColor = Color(0xFF5C1A1A),
+                                titleContentColor = Color.White,
+                                textContentColor = Color.White,
+                                title = {
+                                    Text(
+                                        text = "Receive from remote boat",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                },
+                                text = {
+                                    Text(
+                                        "Are you sure you want to take over the anchor location " +
+                                            "and boat position from the remote boat via the internet?"
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            val code = nasShipCodeInput.trim()
+                                            if (code.isNotBlank()) {
+                                                nasPrefs.saveShipCode(code)
+                                                nasSessionStartElapsedMs = SystemClock.elapsedRealtime()
+                                                nasSendingOkCount = 0
+                                                nasReceivingOkCount = 0
+                                                nasInternetError = null
+                                                nasInternetSessionActive = true
+                                            }
+                                            showNasReceiveConfirmDialog = false
+                                        }
+                                    ) {
+                                        Text("Yes", color = Color(0xFFFFAB91), fontWeight = FontWeight.Bold)
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showNasReceiveConfirmDialog = false }) {
+                                        Text("Cancel", color = Color.White)
+                                    }
+                                }
+                            )
+                        }
+                        }
+                        Spacer(modifier = Modifier.weight(0.45f))
                     }
                     return@Column
                 }
@@ -2292,6 +2732,7 @@ private const val MIN_WIND_SHIFT_GRAPH_WINDOW_MINUTES = 5L
 private const val MAX_GPS_SAMPLE_AGE_MS = (MAX_WIND_SHIFT_WINDOW_MINUTES + 15L) * 60_000L
 private const val ANCHOR_SET_AVERAGE_SECONDS = 10L
 private const val ANCHOR_TRACK_LOG_INTERVAL_MS = 30_000L
+private const val NAS_INTERNET_SYNC_INTERVAL_MS = 30_000L
 private const val DEFAULT_ANCHOR_RADIUS_METERS = 35.0
 private const val MIN_ANCHOR_RADIUS_METERS = 1.0
 private const val MAX_ANCHOR_RADIUS_METERS = 500.0
@@ -2482,6 +2923,17 @@ private fun formatDuration(seconds: Double): String {
     } else {
         String.format(Locale.US, "%02d:%02d", minutes, remainingSeconds)
     }
+}
+
+private fun formatNasSessionDuration(totalSec: Long): String {
+    val s = totalSec.coerceAtLeast(0L)
+    if (s < 60L) return "${s}s"
+    val m = s / 60L
+    val rs = s % 60L
+    if (m < 60L) return "${m}m ${rs}s"
+    val h = m / 60L
+    val rm = m % 60L
+    return "${h}h ${rm}m ${rs}s"
 }
 
 private fun formatCountdown(totalSeconds: Long): String {
@@ -2679,6 +3131,11 @@ private enum class WindShiftGraphDisplayMode {
 private enum class TrackPreviewRenderMode {
     TrackOnly,
     OpenMap
+}
+
+private enum class NasInternetRole(val label: String) {
+    Sending("Sending mode"),
+    Receiving("Receiving mode")
 }
 
 private enum class AnchorAreaMode(val label: String) {

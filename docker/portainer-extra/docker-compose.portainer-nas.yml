@@ -1,0 +1,47 @@
+# Za Portainer BEZ GitHuba: cijeli folder docker/ kopiran na NAS (npr. File Station).
+#
+# 1) Kopiraj na NAS folder koji sadrži: docker-compose.yml, Dockerfile, main.py, requirements.txt
+#    Primjer: /volume1/docker/startline/
+#
+# 2) U OVOM fileu zamijeni REPLACE_ABS_PATH_TO_DOCKER_FOLDER stvarnom putanjom (jedna linija, bez navodnika na kraju).
+#    Primjer Synology: /volume1/docker/startline
+#
+# 3) U Portaineru: Stacks → Add stack → Web editor → zalijepi CIJELI ovaj YAML (nakon zamjene putanje).
+#    Environment variables: POSTGRES_PASSWORD, API_KEY, (opc.) API_HOST_PORT
+#
+# Docker na Synologyu čita build kontekst s diska hosta — apsolutna putanja mora postojati na NAS-u.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: startline-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-startline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-startline}
+    volumes:
+      - startline_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: /volume1/docker/startline
+      dockerfile: Dockerfile
+    container_name: startline-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-startline}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-startline}
+      API_KEY: ${API_KEY:?Set API_KEY}
+    ports:
+      - "${API_HOST_PORT:-8080}:8000"
+
+volumes:
+  startline_pgdata:

@@ -1,0 +1,40 @@
+# Portainer: zalijepi ovaj YML + env varijable. Build povlači iz JAVNOG Git repozitorija (cijeli folder docker/).
+# Zamijeni URL ako nije GitHub ili drugačiji branch / put.
+#
+# Format konteksta: https://github.com/USER/REPO.git#REF:SUBDIR
+# Primjer REF: main ili master. SUBDIR: docker (folder gdje su Dockerfile i main.py).
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: startline-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-startline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-startline}
+    volumes:
+      - startline_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: "https://github.com/REPLACE_GITHUB_USER/REPLACE_REPO.git#main:docker"
+      dockerfile: Dockerfile
+    container_name: startline-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-startline}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-startline}
+      API_KEY: ${API_KEY:?Set API_KEY}
+    ports:
+      - "${API_HOST_PORT:-8080}:8000"
+
+volumes:
+  startline_pgdata:
