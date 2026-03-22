@@ -397,17 +397,24 @@ fun StartLine(
 
             Spacer(modifier = Modifier.height(CompactGapM))
 
-            // Karta placeholder
+            // Karta placeholder (clip kao Surface na Wind Shift — OSM MapView ne smije crtati izvan zaobljenog okvira)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
                     .background(PanelBlack, RoundedCornerShape(12.dp))
                     .border(1.dp, Color.DarkGray, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 if (mapContent != null) {
-                    mapContent()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(2.dp)
+                    ) {
+                        mapContent()
+                    }
                 } else {
                     Text(
                         text = "MAP AREA",

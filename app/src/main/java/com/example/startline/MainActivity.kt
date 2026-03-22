@@ -14,6 +14,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -89,6 +91,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -129,6 +132,44 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.Polygon
+
+/**
+ * Osmdroid [MapView] koji obradi dvostruki tap u četvrtinama prije ugrađenog zooma na double-tap.
+ * Callback se postavlja u AndroidView `update` jer se factory ne izvršava ponovno.
+ */
+private class CornerDoubleTapMapView(context: Context) : MapView(context) {
+    var onCornerDoubleTap: ((topHalf: Boolean, leftHalf: Boolean) -> Unit)? = null
+
+    private val cornerGestureDetector =
+        GestureDetector(
+            context,
+            object : GestureDetector.SimpleOnGestureListener() {}
+        ).apply {
+            setOnDoubleTapListener(
+                object : GestureDetector.OnDoubleTapListener {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        val w = width.toFloat().coerceAtLeast(1f)
+                        val h = height.toFloat().coerceAtLeast(1f)
+                        val topHalf = e.y < h / 2f
+                        val leftHalf = e.x < w / 2f
+                        onCornerDoubleTap?.invoke(topHalf, leftHalf)
+                        return true
+                    }
+
+                    override fun onDoubleTapEvent(e: MotionEvent) = false
+
+                    override fun onSingleTapConfirmed(e: MotionEvent) = false
+                }
+            )
+        }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (cornerGestureDetector.onTouchEvent(event)) {
+            return true
+        }
+        return super.onTouchEvent(event)
+    }
+}
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -2061,51 +2102,57 @@ fun StartLineScreen() {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
-                                .pointerInput(
-                                    windShiftWindowMinutes,
-                                    mapRenderMode,
-                                    windShiftTrackOrientation
-                                ) {
-                                    detectTapGestures(
-                                        onTap = { tap ->
-                                            val topHalf = tap.y < size.height / 2f
-                                            val bottomHalf = !topHalf
-                                            val leftHalf = tap.x < size.width / 2f
-                                            val inRightHalf = tap.x >= size.width / 2f
-                                            if (leftHalf && bottomHalf) {
-                                                if (windShiftTrackOrientation != WindShiftTrackOrientation.NorthUp) {
-                                                    return@detectTapGestures
-                                                }
-                                                mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
-                                                    MapRenderMode.Osm
-                                                } else {
-                                                    MapRenderMode.Canvas
-                                                }
-                                                return@detectTapGestures
-                                            }
-                                            if (leftHalf && topHalf) {
-                                                if (mapRenderMode == MapRenderMode.Osm) {
-                                                    return@detectTapGestures
-                                                }
-                                                windShiftTrackOrientation =
-                                                    if (windShiftTrackOrientation == WindShiftTrackOrientation.NorthUp) {
-                                                        WindShiftTrackOrientation.WindAxisUp
-                                                    } else {
-                                                        WindShiftTrackOrientation.NorthUp
+                                .then(
+                                    if (mapRenderMode == MapRenderMode.Canvas) {
+                                        Modifier.pointerInput(
+                                            windShiftWindowMinutes,
+                                            mapRenderMode,
+                                            windShiftTrackOrientation
+                                        ) {
+                                            detectTapGestures(
+                                                onTap = { tap ->
+                                                    val topHalf = tap.y < size.height / 2f
+                                                    val bottomHalf = !topHalf
+                                                    val leftHalf = tap.x < size.width / 2f
+                                                    val inRightHalf = tap.x >= size.width / 2f
+                                                    if (leftHalf && bottomHalf) {
+                                                        if (windShiftTrackOrientation != WindShiftTrackOrientation.NorthUp) {
+                                                            return@detectTapGestures
+                                                        }
+                                                        mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
+                                                            MapRenderMode.Osm
+                                                        } else {
+                                                            MapRenderMode.Canvas
+                                                        }
+                                                        return@detectTapGestures
                                                     }
-                                                return@detectTapGestures
-                                            }
-                                            if (!inRightHalf) return@detectTapGestures
+                                                    if (leftHalf && topHalf) {
+                                                        if (mapRenderMode == MapRenderMode.Osm) {
+                                                            return@detectTapGestures
+                                                        }
+                                                        windShiftTrackOrientation =
+                                                            if (windShiftTrackOrientation == WindShiftTrackOrientation.NorthUp) {
+                                                                WindShiftTrackOrientation.WindAxisUp
+                                                            } else {
+                                                                WindShiftTrackOrientation.NorthUp
+                                                            }
+                                                        return@detectTapGestures
+                                                    }
+                                                    if (!inRightHalf) return@detectTapGestures
 
-                                            val updated = if (topHalf) {
-                                                windShiftWindowMinutes + 3L
-                                            } else {
-                                                windShiftWindowMinutes - 3L
-                                            }
-                                            applyWindShiftWindowMinutes(updated)
+                                                    val updated = if (topHalf) {
+                                                        windShiftWindowMinutes + 3L
+                                                    } else {
+                                                        windShiftWindowMinutes - 3L
+                                                    }
+                                                    applyWindShiftWindowMinutes(updated)
+                                                }
+                                            )
                                         }
-                                    )
-                                },
+                                    } else {
+                                        Modifier
+                                    }
+                                ),
                             color = Color(0xFF111111),
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(1.dp, Color(0xFF4A4A4A)),
@@ -2135,6 +2182,55 @@ fun StartLineScreen() {
                                         historyMinutes = trackHistoryMinutes,
                                         mapZoom = mapZoom,
                                         modifier = Modifier.fillMaxSize()
+                                    )
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .pointerInput(
+                                                windShiftWindowMinutes,
+                                                mapRenderMode,
+                                                windShiftTrackOrientation
+                                            ) {
+                                                detectTapGestures(
+                                                    onTap = { tap ->
+                                                        val topHalf = tap.y < size.height / 2f
+                                                        val bottomHalf = !topHalf
+                                                        val leftHalf = tap.x < size.width / 2f
+                                                        val inRightHalf = tap.x >= size.width / 2f
+                                                        if (leftHalf && bottomHalf) {
+                                                            if (windShiftTrackOrientation != WindShiftTrackOrientation.NorthUp) {
+                                                                return@detectTapGestures
+                                                            }
+                                                            mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
+                                                                MapRenderMode.Osm
+                                                            } else {
+                                                                MapRenderMode.Canvas
+                                                            }
+                                                            return@detectTapGestures
+                                                        }
+                                                        if (leftHalf && topHalf) {
+                                                            if (mapRenderMode == MapRenderMode.Osm) {
+                                                                return@detectTapGestures
+                                                            }
+                                                            windShiftTrackOrientation =
+                                                                if (windShiftTrackOrientation == WindShiftTrackOrientation.NorthUp) {
+                                                                    WindShiftTrackOrientation.WindAxisUp
+                                                                } else {
+                                                                    WindShiftTrackOrientation.NorthUp
+                                                                }
+                                                            return@detectTapGestures
+                                                        }
+                                                        if (!inRightHalf) return@detectTapGestures
+
+                                                        val updated = if (topHalf) {
+                                                            windShiftWindowMinutes + 3L
+                                                        } else {
+                                                            windShiftWindowMinutes - 3L
+                                                        }
+                                                        applyWindShiftWindowMinutes(updated)
+                                                    }
+                                                )
+                                            }
                                     )
                                     Text(
                                         text = "${windShiftWindowMinutes} min",
@@ -3505,6 +3601,7 @@ private fun AnchoringOpenMap(
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
+                setBuiltInZoomControls(false)
                 isTilesScaledToDpi = true
                 controller.setZoom(15.0)
             }
@@ -3657,28 +3754,31 @@ private fun StartLineMap(
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit
 ) {
+    val canvasMapGestures = Modifier.pointerInput(mapMode, mapZoom, mapRenderMode) {
+        detectTapGestures(
+            onDoubleTap = { tap ->
+                val w = size.width.toFloat()
+                val h = size.height.toFloat()
+                val topHalf = tap.y < h / 2f
+                val bottomHalf = !topHalf
+                val rightHalf = tap.x >= w / 2f
+                val leftHalf = tap.x < w / 2f
+
+                when {
+                    topHalf && leftHalf -> onToggleMapMode()
+                    topHalf && rightHalf -> onZoomIn()
+                    bottomHalf && rightHalf -> onZoomOut()
+                    bottomHalf && leftHalf -> onToggleCanvasOsmFromMap()
+                }
+            }
+        )
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(mapMode, mapZoom, mapRenderMode) {
-                detectTapGestures(
-                    onDoubleTap = { tap ->
-                        val w = size.width.toFloat()
-                        val h = size.height.toFloat()
-                        val topHalf = tap.y < h / 2f
-                        val bottomHalf = !topHalf
-                        val rightHalf = tap.x >= w / 2f
-                        val leftHalf = tap.x < w / 2f
-
-                        when {
-                            topHalf && leftHalf -> onToggleMapMode()
-                            topHalf && rightHalf -> onZoomIn()
-                            bottomHalf && rightHalf -> onZoomOut()
-                            bottomHalf && leftHalf -> onToggleCanvasOsmFromMap()
-                        }
-                    }
-                )
-            }
+            .then(
+                if (mapRenderMode == MapRenderMode.Canvas) canvasMapGestures else Modifier
+            )
     ) {
         if (mapRenderMode == MapRenderMode.Canvas) {
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -3802,105 +3902,142 @@ private fun StartLineMap(
             )
             }
         } else {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
-                    MapView(ctx).apply {
-                        setTileSource(TileSourceFactory.MAPNIK)
-                        setMultiTouchControls(false)
-                        isTilesScaledToDpi = true
-                        controller.setZoom(15.0)
-                    }
-                },
-                update = { mapView ->
-                    val centerLocation = when {
-                        leftBuoyLocation != null && rightBuoyLocation != null -> {
-                            val centerLat = (leftBuoyLocation.latitude + rightBuoyLocation.latitude) / 2.0
-                            val centerLon = (leftBuoyLocation.longitude + rightBuoyLocation.longitude) / 2.0
-                            GeoPoint(centerLat, centerLon)
+            // + / − uz desni rub kao WindShiftTrackGraph (vizualna pomoć za dvostruki tap gore-desno / dolje-desno)
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
+                        CornerDoubleTapMapView(ctx).apply {
+                            setTileSource(TileSourceFactory.MAPNIK)
+                            setMultiTouchControls(false)
+                            setBuiltInZoomControls(false)
+                            isTilesScaledToDpi = true
+                            controller.setZoom(15.0)
                         }
-                        currentLocation != null -> GeoPoint(currentLocation.latitude, currentLocation.longitude)
-                        else -> GeoPoint(45.0, 15.0)
-                    }
-
-                    val lineBearing = if (leftBuoyLocation != null && rightBuoyLocation != null) {
-                        leftBuoyLocation.bearingTo(rightBuoyLocation).toDouble()
-                    } else {
-                        0.0
-                    }
-                    mapView.mapOrientation = if (mapRenderMode == MapRenderMode.Osm) {
-                        0f
-                    } else if (mapMode == MapMode.StartLineUp) {
-                        -lineBearing.toFloat()
-                    } else {
-                        0f
-                    }
-
-                    val zoomLevel = (16.0 + kotlin.math.log2(mapZoom.toDouble())).coerceIn(3.0, 20.0)
-                    mapView.controller.setZoom(zoomLevel)
-                    mapView.controller.setCenter(centerLocation)
-
-                    mapView.overlays.clear()
-
-                    val trackOverlay = Polyline(mapView).apply {
-                        outlinePaint.color = android.graphics.Color.CYAN
-                        outlinePaint.strokeWidth = 4f
-                        setPoints(
-                            raceTrackPoints.takeLast(500).map {
-                                GeoPoint(it.latitude, it.longitude)
+                    },
+                    update = { mapView ->
+                        val cornerMap = mapView as CornerDoubleTapMapView
+                        cornerMap.onCornerDoubleTap = { topHalf, leftHalf ->
+                            when {
+                                topHalf && leftHalf -> onToggleMapMode()
+                                topHalf && !leftHalf -> onZoomIn()
+                                !topHalf && !leftHalf -> onZoomOut()
+                                !topHalf && leftHalf -> onToggleCanvasOsmFromMap()
                             }
-                        )
-                    }
-                    mapView.overlays.add(trackOverlay)
+                        }
+                        val centerLocation = when {
+                            leftBuoyLocation != null && rightBuoyLocation != null -> {
+                                val centerLat = (leftBuoyLocation.latitude + rightBuoyLocation.latitude) / 2.0
+                                val centerLon = (leftBuoyLocation.longitude + rightBuoyLocation.longitude) / 2.0
+                                GeoPoint(centerLat, centerLon)
+                            }
+                            currentLocation != null -> GeoPoint(currentLocation.latitude, currentLocation.longitude)
+                            else -> GeoPoint(45.0, 15.0)
+                        }
 
-                    if (leftBuoyLocation != null && rightBuoyLocation != null) {
-                        val startLineOverlay = Polyline(mapView).apply {
-                            outlinePaint.color = android.graphics.Color.YELLOW
-                            outlinePaint.strokeWidth = 6f
+                        val lineBearing = if (leftBuoyLocation != null && rightBuoyLocation != null) {
+                            leftBuoyLocation.bearingTo(rightBuoyLocation).toDouble()
+                        } else {
+                            0.0
+                        }
+                        mapView.mapOrientation = if (mapRenderMode == MapRenderMode.Osm) {
+                            0f
+                        } else if (mapMode == MapMode.StartLineUp) {
+                            -lineBearing.toFloat()
+                        } else {
+                            0f
+                        }
+
+                        val zoomLevel = (16.0 + kotlin.math.log2(mapZoom.toDouble())).coerceIn(3.0, 20.0)
+                        mapView.controller.setZoom(zoomLevel)
+                        mapView.controller.setCenter(centerLocation)
+
+                        mapView.overlays.clear()
+
+                        val trackOverlay = Polyline(mapView).apply {
+                            outlinePaint.color = android.graphics.Color.CYAN
+                            outlinePaint.strokeWidth = 4f
                             setPoints(
-                                listOf(
-                                    GeoPoint(leftBuoyLocation.latitude, leftBuoyLocation.longitude),
-                                    GeoPoint(rightBuoyLocation.latitude, rightBuoyLocation.longitude)
+                                raceTrackPoints.takeLast(500).map {
+                                    GeoPoint(it.latitude, it.longitude)
+                                }
+                            )
+                        }
+                        mapView.overlays.add(trackOverlay)
+
+                        if (leftBuoyLocation != null && rightBuoyLocation != null) {
+                            val startLineOverlay = Polyline(mapView).apply {
+                                outlinePaint.color = android.graphics.Color.YELLOW
+                                outlinePaint.strokeWidth = 6f
+                                setPoints(
+                                    listOf(
+                                        GeoPoint(leftBuoyLocation.latitude, leftBuoyLocation.longitude),
+                                        GeoPoint(rightBuoyLocation.latitude, rightBuoyLocation.longitude)
+                                    )
+                                )
+                            }
+                            mapView.overlays.add(startLineOverlay)
+                        }
+
+                        leftBuoyLocation?.let { left ->
+                            mapView.overlays.add(
+                                createOsmCircleOverlay(
+                                    mapView = mapView,
+                                    geoPoint = GeoPoint(left.latitude, left.longitude),
+                                    fillColor = android.graphics.Color.argb(220, 239, 83, 80),
+                                    strokeColor = android.graphics.Color.RED
                                 )
                             )
                         }
-                        mapView.overlays.add(startLineOverlay)
-                    }
-
-                    leftBuoyLocation?.let { left ->
-                        mapView.overlays.add(
-                            createOsmCircleOverlay(
-                                mapView = mapView,
-                                geoPoint = GeoPoint(left.latitude, left.longitude),
-                                fillColor = android.graphics.Color.argb(220, 239, 83, 80),
-                                strokeColor = android.graphics.Color.RED
+                        rightBuoyLocation?.let { right ->
+                            mapView.overlays.add(
+                                createOsmCircleOverlay(
+                                    mapView = mapView,
+                                    geoPoint = GeoPoint(right.latitude, right.longitude),
+                                    fillColor = android.graphics.Color.argb(220, 102, 187, 106),
+                                    strokeColor = android.graphics.Color.GREEN
+                                )
                             )
-                        )
-                    }
-                    rightBuoyLocation?.let { right ->
-                        mapView.overlays.add(
-                            createOsmCircleOverlay(
-                                mapView = mapView,
-                                geoPoint = GeoPoint(right.latitude, right.longitude),
-                                fillColor = android.graphics.Color.argb(220, 102, 187, 106),
-                                strokeColor = android.graphics.Color.GREEN
-                            )
-                        )
-                    }
-
-                    currentLocation?.let { boat ->
-                        val boatMarker = Marker(mapView).apply {
-                            position = GeoPoint(boat.latitude, boat.longitude)
-                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                            title = "Brod"
                         }
-                        mapView.overlays.add(boatMarker)
-                    }
 
-                    mapView.invalidate()
-                }
-            )
+                        currentLocation?.let { boat ->
+                            val boatMarker = Marker(mapView).apply {
+                                position = GeoPoint(boat.latitude, boat.longitude)
+                                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                                title = "Brod"
+                            }
+                            mapView.overlays.add(boatMarker)
+                        }
+
+                        mapView.invalidate()
+                    }
+                )
+                val zoomHintStyle = androidx.compose.material3.LocalTextStyle.current.copy(
+                    color = Color.White,
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "+",
+                    style = zoomHintStyle,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .wrapContentWidth(align = Alignment.End)
+                        .padding(end = 12.dp)
+                        .offset(y = maxHeight * 0.25f - 22.dp)
+                )
+                Text(
+                    text = "-",
+                    style = zoomHintStyle,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .wrapContentWidth(align = Alignment.End)
+                        .padding(end = 12.dp)
+                        .offset(y = maxHeight * 0.75f - 22.dp)
+                )
+            }
         }
     }
 }
@@ -4465,6 +4602,7 @@ private fun WindShiftTrackOsmMap(
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(false)
+                setBuiltInZoomControls(false)
                 isTilesScaledToDpi = true
                 mapOrientation = 0f
                 controller.setZoom(15.0)
@@ -5004,6 +5142,7 @@ private fun TrackPreviewOpenMap(
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
+                setBuiltInZoomControls(false)
                 isTilesScaledToDpi = true
                 controller.setZoom(zoomLevel.toDouble())
             }
