@@ -769,6 +769,7 @@ fun StartLineScreen() {
         AppScreen.WindShiftDebug -> "Wind Debug"
         AppScreen.TrackLog -> "Track Log"
         AppScreen.TrackPreview -> "Track Preview"
+        AppScreen.Help -> "Help"
     }
     val trackLogFiles = remember(currentScreen, trackLogRefreshTick) {
         if (currentScreen == AppScreen.TrackLog) {
@@ -1254,8 +1255,9 @@ fun StartLineScreen() {
             val isAnchoringScreen = currentScreen == AppScreen.Anchoring
             val isSettingsScreen = currentScreen == AppScreen.Settings
             val isTrackLogScreen = currentScreen == AppScreen.TrackLog
+            val isHelpScreen = currentScreen == AppScreen.Help
             val useStartLikeHeaderStyle =
-                isWindShiftScreen || isAnchoringScreen || isSettingsScreen || isTrackLogScreen
+                isWindShiftScreen || isAnchoringScreen || isSettingsScreen || isTrackLogScreen || isHelpScreen
             val view = LocalView.current
             val halfStatusBarTopPaddingPx = remember(view) {
                 (ViewCompat.getRootWindowInsets(view)
@@ -2450,7 +2452,7 @@ fun StartLineScreen() {
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Minute štoperice:")
+                                Text("Countdown minutes:")
                                 Spacer(modifier = Modifier.weight(1f))
                                 OutlinedTextField(
                                     value = countdownStartInput,
@@ -2460,9 +2462,9 @@ fun StartLineScreen() {
                                         val parsed = sanitized.toLongOrNull()
                                         when {
                                             sanitized.isBlank() -> countdownStartError =
-                                                "Unesi početne minute štoperice."
-                                            parsed == null -> countdownStartError = "Vrijednost nije valjana."
-                                            parsed < 0L -> countdownStartError = "Ne može biti negativno."
+                                                "Enter initial countdown minutes."
+                                            parsed == null -> countdownStartError = "Invalid value."
+                                            parsed < 0L -> countdownStartError = "Cannot be negative."
                                             else -> {
                                                 countdownStartError = null
                                                 countdownStartMinutes = parsed
@@ -2508,7 +2510,7 @@ fun StartLineScreen() {
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Udaljenost GPS do pramca:")
+                                Text("GPS to bow distance (m):")
                                 Spacer(modifier = Modifier.weight(1f))
                                 OutlinedTextField(
                                     value = gpsToBowDistanceInput,
@@ -2518,9 +2520,9 @@ fun StartLineScreen() {
                                         val parsed = sanitized.toDoubleOrNull()
                                         when {
                                             sanitized.isBlank() -> gpsToBowDistanceError =
-                                                "Unesi udaljenost u metrima."
-                                            parsed == null -> gpsToBowDistanceError = "Vrijednost nije valjana."
-                                            parsed < 0.0 -> gpsToBowDistanceError = "Ne može biti negativno."
+                                                "Enter distance in metres."
+                                            parsed == null -> gpsToBowDistanceError = "Invalid value."
+                                            parsed < 0.0 -> gpsToBowDistanceError = "Cannot be negative."
                                             else -> {
                                                 gpsToBowDistanceError = null
                                                 gpsToBowDistanceMeters = parsed
@@ -2558,7 +2560,7 @@ fun StartLineScreen() {
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Prosječna brzina/smjer (s):")
+                                Text("Speed/heading average (s):")
                                 Spacer(modifier = Modifier.weight(1f))
                                 OutlinedTextField(
                                     value = avgWindowInput,
@@ -2567,9 +2569,9 @@ fun StartLineScreen() {
                                         avgWindowInput = sanitized
                                         val parsed = sanitized.toLongOrNull()
                                         when {
-                                            sanitized.isBlank() -> avgWindowError = "Unesi vrijeme u sekundama."
-                                            parsed == null -> avgWindowError = "Vrijednost nije valjana."
-                                            parsed < 1L -> avgWindowError = "Minimum je 1 s."
+                                            sanitized.isBlank() -> avgWindowError = "Enter time in seconds."
+                                            parsed == null -> avgWindowError = "Invalid value."
+                                            parsed < 1L -> avgWindowError = "Minimum is 1 s."
                                             else -> {
                                                 avgWindowError = null
                                                 avgWindowSeconds = parsed
@@ -2607,7 +2609,7 @@ fun StartLineScreen() {
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Prosjek GPS lokacije (s):")
+                                Text("GPS location average (s):")
                                 Spacer(modifier = Modifier.weight(1f))
                                 OutlinedTextField(
                                     value = gpsLocationAverageInput,
@@ -2617,12 +2619,12 @@ fun StartLineScreen() {
                                         val parsed = sanitized.toLongOrNull()
                                         when {
                                             sanitized.isBlank() -> gpsLocationAverageError =
-                                                "Unesi vrijeme u sekundama."
-                                            parsed == null -> gpsLocationAverageError = "Vrijednost nije valjana."
+                                                "Enter time in seconds."
+                                            parsed == null -> gpsLocationAverageError = "Invalid value."
                                             parsed < MIN_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
-                                                "Minimum je $MIN_GPS_LOCATION_AVERAGE_SECONDS s."
+                                                "Minimum is $MIN_GPS_LOCATION_AVERAGE_SECONDS s."
                                             parsed > MAX_GPS_LOCATION_AVERAGE_SECONDS -> gpsLocationAverageError =
-                                                "Maksimum je $MAX_GPS_LOCATION_AVERAGE_SECONDS s."
+                                                "Maximum is $MAX_GPS_LOCATION_AVERAGE_SECONDS s."
                                             else -> {
                                                 gpsLocationAverageError = null
                                                 gpsLocationAverageSeconds = parsed
@@ -2660,7 +2662,7 @@ fun StartLineScreen() {
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("WindShift prozor (min):")
+                                Text("Wind Shift window (min):")
                                 Spacer(modifier = Modifier.weight(1f))
                                 OutlinedTextField(
                                     value = windShiftWindowInput,
@@ -2669,12 +2671,12 @@ fun StartLineScreen() {
                                         windShiftWindowInput = sanitized
                                         val parsed = sanitized.toLongOrNull()
                                         when {
-                                            sanitized.isBlank() -> windShiftWindowError = "Unesi minute za WindShift."
-                                            parsed == null -> windShiftWindowError = "Vrijednost nije valjana."
+                                            sanitized.isBlank() -> windShiftWindowError = "Enter minutes for Wind Shift."
+                                            parsed == null -> windShiftWindowError = "Invalid value."
                                             parsed < MIN_WIND_SHIFT_WINDOW_MINUTES ->
-                                                windShiftWindowError = "Minimum je $MIN_WIND_SHIFT_WINDOW_MINUTES min."
+                                                windShiftWindowError = "Minimum is $MIN_WIND_SHIFT_WINDOW_MINUTES min."
                                             parsed > MAX_WIND_SHIFT_WINDOW_MINUTES ->
-                                                windShiftWindowError = "Maksimum je $MAX_WIND_SHIFT_WINDOW_MINUTES min."
+                                                windShiftWindowError = "Maximum is $MAX_WIND_SHIFT_WINDOW_MINUTES min."
                                             else -> {
                                                 applyWindShiftWindowMinutes(parsed)
                                             }
@@ -2707,7 +2709,7 @@ fun StartLineScreen() {
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("WindShift smjer (s):")
+                                Text("Wind Shift heading (s):")
                                 Spacer(modifier = Modifier.weight(1f))
                                 OutlinedTextField(
                                     value = windShiftHeadingWindowInput,
@@ -2717,12 +2719,12 @@ fun StartLineScreen() {
                                         val parsed = sanitized.toLongOrNull()
                                         when {
                                             sanitized.isBlank() -> windShiftHeadingWindowError =
-                                                "Unesi sekunde za WindShift smjer."
-                                            parsed == null -> windShiftHeadingWindowError = "Vrijednost nije valjana."
+                                                "Enter seconds for Wind Shift heading."
+                                            parsed == null -> windShiftHeadingWindowError = "Invalid value."
                                             parsed < MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS ->
-                                                windShiftHeadingWindowError = "Minimum je $MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
+                                                windShiftHeadingWindowError = "Minimum is $MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
                                             parsed > MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS ->
-                                                windShiftHeadingWindowError = "Maksimum je $MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
+                                                windShiftHeadingWindowError = "Maximum is $MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS s."
                                             else -> {
                                                 applyWindShiftHeadingWindowSeconds(parsed)
                                             }
@@ -2758,7 +2760,7 @@ fun StartLineScreen() {
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("WindShift SD filter:")
+                                Text("Wind Shift SD filter:")
                                 Box {
                                     Button(
                                         onClick = { windShiftSdDropdownExpanded = true },
@@ -2773,7 +2775,7 @@ fun StartLineScreen() {
                                         onDismissRequest = { windShiftSdDropdownExpanded = false }
                                     ) {
                                         DropdownMenuItem(
-                                            text = { Text("Isključeno") },
+                                            text = { Text("Off") },
                                             onClick = {
                                                 windShiftStdFilterMode = WindShiftStdFilterMode.Off
                                                 windShiftSdDropdownExpanded = false
@@ -2797,8 +2799,32 @@ fun StartLineScreen() {
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(120.dp))
+                            Spacer(modifier = Modifier.height(24.dp))
+                            TextButton(
+                                onClick = { currentScreen = AppScreen.Help },
+                                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF90CAF9))
+                            ) {
+                                Text("Help", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(
+                                onClick = { showExitConfirmDialog = true },
+                                colors = ButtonDefaults.textButtonColors(contentColor = Color.White)
+                            ) {
+                                Text("Exit", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(modifier = Modifier.height(24.dp))
                         }
+                    }
+                    return@Column
+                }
+
+                if (currentScreen == AppScreen.Help) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black)
+                    ) {
+                        HelpScreen(modifier = Modifier.fillMaxSize())
                     }
                     return@Column
                 }
@@ -3214,6 +3240,13 @@ private fun AppHeader(
                             }
                         )
                         DropdownMenuItem(
+                            text = { Text("Help") },
+                            onClick = {
+                                onScreenSelected(AppScreen.Help)
+                                onMenuExpandedChange(false)
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Exit") },
                             onClick = {
                                 onMenuExpandedChange(false)
@@ -3234,7 +3267,8 @@ private enum class AppScreen {
     Anchoring,
     WindShiftDebug,
     TrackLog,
-    TrackPreview
+    TrackPreview,
+    Help
 }
 
 private enum class ScreenMode {
@@ -3283,7 +3317,7 @@ private enum class AnchorMapRenderMode {
 }
 
 private enum class WindShiftStdFilterMode(val label: String, val sigmaMultiplier: Double?) {
-    Off("Isključeno", null),
+    Off("Off", null),
     OneSigma(">1 SD", 1.0),
     TwoSigma(">2 SD", 2.0)
 }
@@ -4517,7 +4551,7 @@ private fun WindShiftDeviationGraph(
 
             if (points.size < 2) {
                 drawContext.canvas.nativeCanvas.drawText(
-                    "Nema dovoljno podataka za graf",
+                    "Not enough data for the graph",
                     20f,
                     size.height / 2f,
                     labelPaint.apply { textSize = 30f * textScale }
