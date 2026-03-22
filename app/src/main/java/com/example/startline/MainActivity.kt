@@ -1230,12 +1230,10 @@ fun StartLineScreen() {
                                 }
                             },
                             onToggleCanvasOsmFromMap = {
-                                if (mapMode == MapMode.NorthUp) {
-                                    mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
-                                        MapRenderMode.Osm
-                                    } else {
-                                        MapRenderMode.Canvas
-                                    }
+                                mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
+                                    MapRenderMode.Osm
+                                } else {
+                                    MapRenderMode.Canvas
                                 }
                             },
                             onZoomIn = {
@@ -2116,9 +2114,6 @@ fun StartLineScreen() {
                                                     val leftHalf = tap.x < size.width / 2f
                                                     val inRightHalf = tap.x >= size.width / 2f
                                                     if (leftHalf && bottomHalf) {
-                                                        if (windShiftTrackOrientation != WindShiftTrackOrientation.NorthUp) {
-                                                            return@detectTapGestures
-                                                        }
                                                         mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
                                                             MapRenderMode.Osm
                                                         } else {
@@ -2198,9 +2193,6 @@ fun StartLineScreen() {
                                                         val leftHalf = tap.x < size.width / 2f
                                                         val inRightHalf = tap.x >= size.width / 2f
                                                         if (leftHalf && bottomHalf) {
-                                                            if (windShiftTrackOrientation != WindShiftTrackOrientation.NorthUp) {
-                                                                return@detectTapGestures
-                                                            }
                                                             mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
                                                                 MapRenderMode.Osm
                                                             } else {
