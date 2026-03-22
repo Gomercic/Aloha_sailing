@@ -1223,12 +1223,10 @@ fun StartLineScreen() {
                             mapRenderMode = mapRenderMode,
                             mapZoom = mapZoom,
                             onToggleMapMode = {
-                                if (mapRenderMode != MapRenderMode.Osm) {
-                                    mapMode = if (mapMode == MapMode.NorthUp) {
-                                        MapMode.StartLineUp
-                                    } else {
-                                        MapMode.NorthUp
-                                    }
+                                mapMode = if (mapMode == MapMode.NorthUp) {
+                                    MapMode.StartLineUp
+                                } else {
+                                    MapMode.NorthUp
                                 }
                             },
                             onToggleCanvasOsmFromMap = {
@@ -2129,9 +2127,6 @@ fun StartLineScreen() {
                                                         return@detectTapGestures
                                                     }
                                                     if (leftHalf && topHalf) {
-                                                        if (mapRenderMode == MapRenderMode.Osm) {
-                                                            return@detectTapGestures
-                                                        }
                                                         windShiftTrackOrientation =
                                                             if (windShiftTrackOrientation == WindShiftTrackOrientation.NorthUp) {
                                                                 WindShiftTrackOrientation.WindAxisUp
@@ -2183,6 +2178,8 @@ fun StartLineScreen() {
                                         activeWindowMinutes = windShiftWindowMinutes,
                                         historyMinutes = trackHistoryMinutes,
                                         mapZoom = mapZoom,
+                                        orientation = windShiftTrackOrientation,
+                                        referenceCourseDeg = windShiftReferenceCourseDeg,
                                         modifier = Modifier.fillMaxSize()
                                     )
                                     Box(
@@ -2191,7 +2188,8 @@ fun StartLineScreen() {
                                             .pointerInput(
                                                 windShiftWindowMinutes,
                                                 mapRenderMode,
-                                                windShiftTrackOrientation
+                                                windShiftTrackOrientation,
+                                                windShiftReferenceCourseDeg
                                             ) {
                                                 detectTapGestures(
                                                     onTap = { tap ->
@@ -2211,9 +2209,6 @@ fun StartLineScreen() {
                                                             return@detectTapGestures
                                                         }
                                                         if (leftHalf && topHalf) {
-                                                            if (mapRenderMode == MapRenderMode.Osm) {
-                                                                return@detectTapGestures
-                                                            }
                                                             windShiftTrackOrientation =
                                                                 if (windShiftTrackOrientation == WindShiftTrackOrientation.NorthUp) {
                                                                     WindShiftTrackOrientation.WindAxisUp
@@ -2252,7 +2247,11 @@ fun StartLineScreen() {
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        text = "North up",
+                                        text = if (windShiftTrackOrientation == WindShiftTrackOrientation.NorthUp) {
+                                            "North up"
+                                        } else {
+                                            "Wind up"
+                                        },
                                         modifier = Modifier
                                             .align(Alignment.TopStart)
                                             .padding(start = 8.dp, top = 8.dp),
@@ -3975,9 +3974,7 @@ private fun StartLineMap(
                         } else {
                             0.0
                         }
-                        mapView.mapOrientation = if (mapRenderMode == MapRenderMode.Osm) {
-                            0f
-                        } else if (mapMode == MapMode.StartLineUp) {
+                        mapView.mapOrientation = if (mapMode == MapMode.StartLineUp) {
                             -lineBearing.toFloat()
                         } else {
                             0f
@@ -4627,6 +4624,8 @@ private fun WindShiftTrackOsmMap(
     activeWindowMinutes: Long,
     historyMinutes: Long,
     mapZoom: Float,
+    orientation: WindShiftTrackOrientation,
+    referenceCourseDeg: Double?,
     modifier: Modifier = Modifier
 ) {
     AndroidView(
@@ -4643,7 +4642,11 @@ private fun WindShiftTrackOsmMap(
             }
         },
         update = { mapView ->
-            mapView.mapOrientation = 0f
+            mapView.mapOrientation = when {
+                orientation == WindShiftTrackOrientation.NorthUp -> 0f
+                referenceCourseDeg != null -> -referenceCourseDeg.toFloat()
+                else -> 0f
+            }
             val sorted = samples.sortedBy { it.timestampMs }
             if (sorted.size < 2) {
                 mapView.overlays.clear()
