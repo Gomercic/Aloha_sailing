@@ -1,19 +1,19 @@
 # Aloha Sailing (StartLine)
 
-Android aplikacija za startnu liniju, WindShift analizu, sidrenje i GPX tragove.
+Android app for the start line, WindShift analysis, anchoring, and GPX tracks.
 
 ## Build
 
-Zahtijeva Android Studio ili JDK 17+ i Android SDK.
+Requires Android Studio or JDK 17+ and the Android SDK.
 
 ```bash
 ./gradlew assembleDebug
 ```
 
-Release potpisivanje: vidi [docs/RELEASE_SIGNING.md](docs/RELEASE_SIGNING.md).
+Release signing: see [docs/RELEASE_SIGNING.md](docs/RELEASE_SIGNING.md).
 
-## Struktura
+## Layout
 
-- `app/` — Android modul (`com.aloha.startline`)
-- `docker/` — NAS / kontejner pomoć
-- `docs/` — upute za release i Play Store
+- `app/` — Android module (`com.aloha.startline`)
+- `docker/` — NAS / container helpers
+- `docs/` — release and Play Store notes
