@@ -1,4 +1,4 @@
-package com.example.startline
+package com.aloha.startline
 
 import org.junit.Test
 

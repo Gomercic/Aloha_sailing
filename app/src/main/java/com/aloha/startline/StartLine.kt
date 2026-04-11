@@ -1,4 +1,4 @@
-package com.example.startline
+package com.aloha.startline
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border

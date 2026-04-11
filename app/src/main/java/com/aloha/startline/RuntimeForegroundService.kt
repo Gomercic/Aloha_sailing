@@ -1,4 +1,4 @@
-package com.example.startline
+package com.aloha.startline
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -45,8 +45,8 @@ class RuntimeForegroundService : Service() {
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("StartLine active")
-            .setContentText("Anchoring/track/timer runtime active")
+            .setContentTitle("Aloha location tracking active")
+            .setContentText("Aloha is tracking your location for navigation or anchor monitoring. Open the app to stop.")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -58,10 +58,10 @@ class RuntimeForegroundService : Service() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "StartLine runtime",
+            "Aloha location tracking",
             NotificationManager.IMPORTANCE_LOW
         )
-        channel.description = "Keeps StartLine runtime active in background"
+        channel.description = "Foreground notification for background location tracking."
         manager.createNotificationChannel(channel)
     }
 
@@ -76,7 +76,7 @@ class RuntimeForegroundService : Service() {
     }
 
     companion object {
-        const val ACTION_STOP_SERVICE = "com.example.startline.action.STOP_RUNTIME_SERVICE"
+        const val ACTION_STOP_SERVICE = "com.aloha.startline.action.STOP_RUNTIME_SERVICE"
         private const val CHANNEL_ID = "startline_runtime_channel"
         private const val NOTIFICATION_ID = 1001
     }

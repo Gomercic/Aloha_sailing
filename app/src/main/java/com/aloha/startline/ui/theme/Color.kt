@@ -1,4 +1,4 @@
-package com.example.startline.ui.theme
+package com.aloha.startline.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

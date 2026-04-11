@@ -13,7 +13,7 @@ if (hasReleaseKeystore) {
 }
 
 android {
-    namespace = "com.example.startline"
+    namespace = "com.aloha.startline"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -21,11 +21,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.startline"
+        applicationId = "com.aloha.startline"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 4
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

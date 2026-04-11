@@ -22,3 +22,9 @@ keystore.properties
 release-keystore.jks
 *.jks
 *.keystore
+
+# Kotlin / IDE
+.kotlin/
+
+# Lokalni pomoćni folder (nije dio aplikacije)
+StartLine pomocni fajlovi/

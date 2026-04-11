@@ -1,4 +1,4 @@
-package com.example.startline
+package com.aloha.startline
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -99,11 +99,11 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import com.example.startline.nas.NasAnchoringPayload
-import com.example.startline.nas.NasCallResult
-import com.example.startline.nas.NasSyncPreferences
-import com.example.startline.nas.NasTelemetryClient
-import com.example.startline.nas.NasTrackPoint
+import com.aloha.startline.nas.NasAnchoringPayload
+import com.aloha.startline.nas.NasCallResult
+import com.aloha.startline.nas.NasSyncPreferences
+import com.aloha.startline.nas.NasTelemetryClient
+import com.aloha.startline.nas.NasTrackPoint
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -233,6 +233,8 @@ fun StartLineScreen() {
     var currentLocation by remember { mutableStateOf<Location?>(null) }
     var gpsSamples by remember { mutableStateOf<List<GpsSample>>(emptyList()) }
     var raceTrackPoints by remember { mutableStateOf<List<RaceTrackPoint>>(emptyList()) }
+    /** Kurs zadnje snimljene race točke (segment last→fix), za prag promjene kursa. */
+    var raceTrackLastRecordedCourseDeg by remember { mutableStateOf<Double?>(null) }
     var isTrackRecording by remember { mutableStateOf(false) }
     var trackExportStatus by remember { mutableStateOf<String?>(null) }
     var trackLogRefreshTick by remember { mutableIntStateOf(0) }
@@ -372,12 +374,40 @@ fun StartLineScreen() {
                             anchorLastTrackLogEpochMs = epochNow
                         }
                     }
-                    if (isTrackRecording) {
-                        raceTrackPoints = raceTrackPoints + RaceTrackPoint(
-                            latitude = latestLocation.latitude,
-                            longitude = latestLocation.longitude,
-                            epochMillis = System.currentTimeMillis()
-                        )
+                    if (isTrackRecording && raceTrackPoints.isNotEmpty()) {
+                        val epochNow = System.currentTimeMillis()
+                        val lastPt = raceTrackPoints.last()
+                        val lastLoc = Location("race_track_last").apply {
+                            latitude = lastPt.latitude
+                            longitude = lastPt.longitude
+                        }
+                        val moveMeters = lastLoc.distanceTo(latestLocation).toDouble()
+                        val segmentCourseDeg =
+                            if (moveMeters >= RACE_TRACK_MIN_MOVE_FOR_HEADING_M) {
+                                normalizeDegrees(lastLoc.bearingTo(latestLocation).toDouble())
+                            } else {
+                                null
+                            }
+                        val timeOk =
+                            epochNow - lastPt.epochMillis >= RACE_TRACK_LOG_INTERVAL_MS
+                        val headingOk =
+                            segmentCourseDeg != null &&
+                                raceTrackLastRecordedCourseDeg != null &&
+                                abs(
+                                    signedShortestAngleDegrees(
+                                        raceTrackLastRecordedCourseDeg!!,
+                                        segmentCourseDeg
+                                    )
+                                ) >= RACE_TRACK_HEADING_CHANGE_DEG
+                        if (timeOk || headingOk) {
+                            raceTrackPoints = raceTrackPoints + RaceTrackPoint(
+                                latitude = latestLocation.latitude,
+                                longitude = latestLocation.longitude,
+                                epochMillis = epochNow
+                            )
+                            raceTrackLastRecordedCourseDeg =
+                                segmentCourseDeg ?: raceTrackLastRecordedCourseDeg
+                        }
                     }
                 }
             }
@@ -860,6 +890,7 @@ fun StartLineScreen() {
     }
     val startTrackRecording: (Location) -> Unit = { startLocation ->
         isTrackRecording = true
+        raceTrackLastRecordedCourseDeg = null
         raceTrackPoints = listOf(
             RaceTrackPoint(
                 latitude = startLocation.latitude,
@@ -1156,6 +1187,7 @@ fun StartLineScreen() {
                         }
                         isTrackRecording = false
                         raceTrackPoints = emptyList()
+                        raceTrackLastRecordedCourseDeg = null
                         raceStartEpochMillis = null
                         windShiftStartElapsedRealtimeMs = null
                         raceStartLat = null
@@ -2039,7 +2071,10 @@ fun StartLineScreen() {
                 }
 
                 if (currentScreen == AppScreen.WindShift) {
-                    val trackHistoryMinutes = max(90L, windShiftWindowMinutes + 15L)
+                    val trackHistoryMinutes =
+                        (windShiftWindowMinutes + WIND_SHIFT_TRACK_HISTORY_MARGIN_MINUTES).coerceAtMost(
+                            MAX_WIND_SHIFT_WINDOW_MINUTES + WIND_SHIFT_TRACK_HISTORY_MARGIN_MINUTES
+                        )
                     val windShiftReferenceCourseDeg = when (windAnalyzer.mode) {
                         Mode.DUAL -> windAnalyzer.centerCourse
                         Mode.SINGLE -> windAnalyzer.singleMeanCourse?.let { mean ->
@@ -2282,7 +2317,7 @@ fun StartLineScreen() {
                         ) {
                             if (trackLogFiles.isEmpty()) {
                                 Text(
-                                    "Nema spremljenih trackova.",
+                                    "No saved tracks.",
                                     color = Color.White
                                 )
                             } else {
@@ -2866,14 +2901,20 @@ private const val DEFAULT_COUNTDOWN_START_MINUTES = 5L
 private const val DEFAULT_WIND_SHIFT_WINDOW_MINUTES = 2L
 private const val MIN_WIND_SHIFT_WINDOW_MINUTES = 2L
 private const val MAX_WIND_SHIFT_WINDOW_MINUTES = 180L
+/** Margin iznad wind-shift prozora za donji track i retention GPS uzoraka. */
+private const val WIND_SHIFT_TRACK_HISTORY_MARGIN_MINUTES = 15L
 private const val DEFAULT_WIND_SHIFT_HEADING_WINDOW_SECONDS = 10L
 private const val MIN_WIND_SHIFT_HEADING_WINDOW_SECONDS = 1L
 private const val MAX_WIND_SHIFT_HEADING_WINDOW_SECONDS = 30L
 private const val DEFAULT_WIND_SHIFT_GRAPH_WINDOW_MINUTES = 10L
 private const val MIN_WIND_SHIFT_GRAPH_WINDOW_MINUTES = 5L
-private const val MAX_GPS_SAMPLE_AGE_MS = (MAX_WIND_SHIFT_WINDOW_MINUTES + 15L) * 60_000L
+private const val MAX_GPS_SAMPLE_AGE_MS =
+    (MAX_WIND_SHIFT_WINDOW_MINUTES + WIND_SHIFT_TRACK_HISTORY_MARGIN_MINUTES) * 60_000L
 private const val ANCHOR_SET_AVERAGE_SECONDS = 10L
 private const val ANCHOR_TRACK_LOG_INTERVAL_MS = 30_000L
+private const val RACE_TRACK_LOG_INTERVAL_MS = 10_000L
+private const val RACE_TRACK_HEADING_CHANGE_DEG = 10.0
+private const val RACE_TRACK_MIN_MOVE_FOR_HEADING_M = 5.0
 private const val NAS_INTERNET_SYNC_INTERVAL_MS = 30_000L
 private const val DEFAULT_ANCHOR_RADIUS_METERS = 35.0
 private const val MIN_ANCHOR_RADIUS_METERS = 1.0
@@ -3085,12 +3126,24 @@ private fun formatCountdown(totalSeconds: Long): String {
     return String.format(Locale.US, "%02d:%02d", minutes, seconds)
 }
 
+/** Štoperica nakon nule: ispod 60 min MM:SS, od 60 min nadalje H:MM. */
+private fun formatPostZeroElapsed(totalSeconds: Long): String {
+    val s = totalSeconds.coerceAtLeast(0L)
+    return if (s < 3600L) {
+        formatCountdown(s)
+    } else {
+        val hours = s / 3600L
+        val minutes = (s % 3600L) / 60L
+        String.format(Locale.US, "%d:%02d", hours, minutes)
+    }
+}
+
 /** Prije nule: preostalo; na/poslije nule: proteklo od starta (00:00, 00:01, …). */
 private fun formatCountdownOrOvertime(remainingCountdownSeconds: Long, postZeroElapsedSeconds: Long): String {
     return if (remainingCountdownSeconds > 0L) {
         formatCountdown(remainingCountdownSeconds)
     } else {
-        formatCountdown(postZeroElapsedSeconds)
+        formatPostZeroElapsed(postZeroElapsedSeconds)
     }
 }
 
@@ -4402,10 +4455,12 @@ private fun WindShiftDeviationGraph(
     val textScale = 1.5f
     val isAutoMode = graphDisplayMode == WindShiftGraphDisplayMode.Auto
     val isPositiveLeft = isAutoMode && isMonoMode && !monoSignInverted
-    val displayCurrentDeviation = if (!isAutoMode && isMonoMode && monoSignInverted) {
-        currentDeviationDeg?.times(-1.0)
-    } else {
-        currentDeviationDeg
+    val latestDeviationPoint = points.maxByOrNull { it.timestampMs }
+    val lastDualCloserToPort = latestDeviationPoint?.dualCloserToPort == true
+    val displayCurrentDeviation = when {
+        !isAutoMode && isMonoMode && monoSignInverted -> currentDeviationDeg?.times(-1.0)
+        isAutoMode && !isMonoMode && lastDualCloserToPort -> currentDeviationDeg?.times(-1.0)
+        else -> currentDeviationDeg
     }
     val trendColor = when {
         displayCurrentDeviation == null -> Color(0xFF78909C)
@@ -4584,10 +4639,10 @@ private fun WindShiftDeviationGraph(
                 val elapsedFromLatest = (latestTs - point.timestampMs).coerceAtLeast(0.0)
                 val timeFraction = (elapsedFromLatest / windowMs).coerceIn(0.0, 1.0).toFloat()
                 val y = timeFraction * size.height // newer top, older bottom
-                val displayDeviation = if (!isAutoMode && isMonoMode && monoSignInverted) {
-                    -point.deviationDeg
-                } else {
-                    point.deviationDeg
+                val displayDeviation = when {
+                    !isAutoMode && isMonoMode && monoSignInverted -> -point.deviationDeg
+                    isAutoMode && !isMonoMode && point.dualCloserToPort == true -> -point.deviationDeg
+                    else -> point.deviationDeg
                 }
                 val x = if (isPositiveLeft) {
                     centerX - (displayDeviation / maxAbsDeviation).toFloat() * halfWidth

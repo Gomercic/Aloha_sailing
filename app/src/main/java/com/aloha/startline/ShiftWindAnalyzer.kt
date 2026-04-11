@@ -1,4 +1,4 @@
-package com.example.startline
+package com.aloha.startline
 
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -14,7 +14,9 @@ data class CogSample(
 
 data class DeviationPoint(
     val timestampMs: Long,
-    val deviationDeg: Double
+    val deviationDeg: Double,
+    /** U DUAL modu: true ako je za taj uzorak bliži port predložak (isti kriterij kao za chosen). */
+    val dualCloserToPort: Boolean? = null
 )
 
 enum class Mode {
@@ -266,8 +268,9 @@ class ShiftWindAnalyzer(
         val points = validSamples.map { sample ->
             val diffToPort = signedShortestAngle(sample.cogDeg, dualResult.targetPortDeg)
             val diffToStar = signedShortestAngle(sample.cogDeg, dualResult.targetStarboardDeg)
-            val chosen = if (abs(diffToPort) <= abs(diffToStar)) diffToPort else diffToStar
-            DeviationPoint(sample.timestampMs, chosen)
+            val closerToPort = abs(diffToPort) <= abs(diffToStar)
+            val chosen = if (closerToPort) diffToPort else diffToStar
+            DeviationPoint(sample.timestampMs, chosen, closerToPort)
         }
         singleMeanCourse = null
         portMeanCourse = dualResult.portMeanDeg

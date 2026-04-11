@@ -1,4 +1,4 @@
-package com.example.startline.nas
+package com.aloha.startline.nas
 
 /**
  * Fiksni NAS API (reverse proxy / javni URL i API_KEY iz docker/.env).
