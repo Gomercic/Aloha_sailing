@@ -82,6 +82,14 @@ fun StartLine(
     distanceDisplayText: String = "-126 m",
     etaDeltaDisplayText: String = "-432 sec",
     statusFrameColor: Color = Color.Red,
+    timerTopMessage: String? = null,
+    showCountdownAdjustButtons: Boolean = true,
+    enableCountdownTapRound: Boolean = true,
+    showStartStopResetButtons: Boolean = true,
+    showBuoyControls: Boolean = true,
+    showInfoRowWhenControlsHidden: Boolean = false,
+    leftInfoText: String? = null,
+    rightInfoText: String? = null,
     onDoubleClickAction: ((actionKey: String, onConfirmed: () -> Unit) -> Unit)? = null,
     onCountdownRound: () -> Unit = {},
     onCountdownStartStop: () -> Unit = {},
@@ -182,13 +190,15 @@ fun StartLine(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SmallButton(
-                    text = "−",
-                    onClick = {
-                        onDoubleClickAction?.invoke("countdown_minus", onCountdownMinus)
-                            ?: onCountdownMinus()
-                    }
-                )
+                if (showCountdownAdjustButtons) {
+                    SmallButton(
+                        text = "−",
+                        onClick = {
+                            onDoubleClickAction?.invoke("countdown_minus", onCountdownMinus)
+                                ?: onCountdownMinus()
+                        }
+                    )
+                }
 
                 Spacer(modifier = Modifier.width(CompactGapM))
 
@@ -197,76 +207,107 @@ fun StartLine(
                     color = if (countdownOvertimeActive) CountdownOvertimeBlue else YellowText,
                     fontSize = 90.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.pointerInput(onDoubleClickAction) {
-                        detectTapGestures(
-                            onTap = {
-                                onDoubleClickAction?.invoke("countdown_round", onCountdownRound)
-                                    ?: onCountdownRound()
-                            }
-                        )
+                    modifier = if (enableCountdownTapRound) {
+                        Modifier.pointerInput(onDoubleClickAction) {
+                            detectTapGestures(
+                                onTap = {
+                                    onDoubleClickAction?.invoke("countdown_round", onCountdownRound)
+                                        ?: onCountdownRound()
+                                }
+                            )
+                        }
+                    } else {
+                        Modifier
                     }
                 )
 
                 Spacer(modifier = Modifier.width(CompactGapM))
 
-                SmallButton(
-                    text = "+",
-                    onClick = {
-                        onDoubleClickAction?.invoke("countdown_plus", onCountdownPlus)
-                            ?: onCountdownPlus()
-                    }
+                if (showCountdownAdjustButtons) {
+                    SmallButton(
+                        text = "+",
+                        onClick = {
+                            onDoubleClickAction?.invoke("countdown_plus", onCountdownPlus)
+                                ?: onCountdownPlus()
+                        }
+                    )
+                }
+            }
+
+            if (!timerTopMessage.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = timerTopMessage,
+                    color = MidGreyText,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
 
             Spacer(modifier = Modifier.height(CompactGapXs))
 
-            // Start / Reset
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .offset(y = (-4).dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = clockDisplayText,
-                    color = MidGreyText,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.CenterStart)
-                )
-                ActionButton(
-                    text = if (isCountdownRunning) "Stop" else "Start",
-                    background = GreenBtn,
-                    onClick = {
-                        onDoubleClickAction?.invoke("countdown_start", onCountdownStartStop)
-                            ?: onCountdownStartStop()
-                    }
-                )
-
-                Button(
-                    onClick = {
-                        onDoubleClickAction?.invoke("countdown_reset", onCountdownReset)
-                            ?: onCountdownReset()
-                    },
+            if (showStartStopResetButtons || showInfoRowWhenControlsHidden) {
+                // Start / Reset
+                Box(
                     modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .height(56.dp)
-                        .width(74.dp),
-                    contentPadding = CompactActionButtonPadding,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = RedBtn,
-                        contentColor = WhiteText
-                    ),
-                    shape = RoundedCornerShape(CompactButtonCorner)
+                        .fillMaxWidth()
+                        .offset(y = (-4).dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "Reset\nStop REC",
-                        fontSize = 8.sp,
-                        lineHeight = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(1f)
-                    )
+                    val leftText = leftInfoText ?: clockDisplayText
+                    if (leftText.isNotBlank()) {
+                        Text(
+                            text = leftText,
+                            color = MidGreyText,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.CenterStart)
+                        )
+                    }
+                    if (showStartStopResetButtons) {
+                        ActionButton(
+                            text = if (isCountdownRunning) "Stop" else "Start",
+                            background = GreenBtn,
+                            onClick = {
+                                onDoubleClickAction?.invoke("countdown_start", onCountdownStartStop)
+                                    ?: onCountdownStartStop()
+                            }
+                        )
+
+                        Button(
+                            onClick = {
+                                onDoubleClickAction?.invoke("countdown_reset", onCountdownReset)
+                                    ?: onCountdownReset()
+                            },
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .height(56.dp)
+                                .width(74.dp),
+                            contentPadding = CompactActionButtonPadding,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = RedBtn,
+                                contentColor = WhiteText
+                            ),
+                            shape = RoundedCornerShape(CompactButtonCorner)
+                        ) {
+                            Text(
+                                text = "Reset\nStop REC",
+                                fontSize = 8.sp,
+                                lineHeight = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    } else if (!rightInfoText.isNullOrBlank()) {
+                        Text(
+                            text = rightInfoText,
+                            color = MidGreyText,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.align(Alignment.CenterEnd)
+                        )
+                    }
                 }
             }
             Box(
@@ -325,18 +366,20 @@ fun StartLine(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ActionButton(
-                    text = if (leftBuoySet) "✓\nL" else "Set\nL",
-                    background = if (leftBuoySet) GreenBtn else RedBtn,
-                    modifier = Modifier
-                        .width(112.dp)
-                        .height(102.dp),
-                    onClick = {
-                        onDoubleClickAction?.invoke("left_buoy", onLeftBuoyToggle) ?: onLeftBuoyToggle()
-                    }
-                )
+                if (showBuoyControls) {
+                    ActionButton(
+                        text = if (leftBuoySet) "✓\nL" else "Set\nL",
+                        background = if (leftBuoySet) GreenBtn else RedBtn,
+                        modifier = Modifier
+                            .width(112.dp)
+                            .height(102.dp),
+                        onClick = {
+                            onDoubleClickAction?.invoke("left_buoy", onLeftBuoyToggle) ?: onLeftBuoyToggle()
+                        }
+                    )
 
-                Spacer(modifier = Modifier.width(CompactGapS))
+                    Spacer(modifier = Modifier.width(CompactGapS))
+                }
 
                 Column(
                     modifier = Modifier.padding(horizontal = CompactGapXs),
@@ -355,18 +398,20 @@ fun StartLine(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(CompactGapS))
+                if (showBuoyControls) {
+                    Spacer(modifier = Modifier.width(CompactGapS))
 
-                ActionButton(
-                    text = if (rightBuoySet) "✓\nR" else "Set\nR",
-                    background = if (rightBuoySet) GreenBtn else RedBtn,
-                    modifier = Modifier
-                        .width(112.dp)
-                        .height(102.dp),
-                    onClick = {
-                        onDoubleClickAction?.invoke("right_buoy", onRightBuoyToggle) ?: onRightBuoyToggle()
-                    }
-                )
+                    ActionButton(
+                        text = if (rightBuoySet) "✓\nR" else "Set\nR",
+                        background = if (rightBuoySet) GreenBtn else RedBtn,
+                        modifier = Modifier
+                            .width(112.dp)
+                            .height(102.dp),
+                        onClick = {
+                            onDoubleClickAction?.invoke("right_buoy", onRightBuoyToggle) ?: onRightBuoyToggle()
+                        }
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(CompactGapL))

@@ -14,6 +14,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
+import android.graphics.drawable.ShapeDrawable
+import android.graphics.drawable.shapes.OvalShape
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -77,6 +79,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
@@ -99,6 +102,15 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.aloha.startline.ActionButton
+import com.aloha.startline.HelpScreen
+import com.aloha.startline.StartLine
+import com.aloha.startline.regatta.RegattaApiClient
+import com.aloha.startline.regatta.RegattaClientCrossingPayload
+import com.aloha.startline.regatta.RegattaPreferences
+import com.aloha.startline.regatta.RegattaScreen
+import com.aloha.startline.regatta.RegattaSignalPoint
+import com.aloha.startline.regatta.RegattaTrackPointPayload
 import com.aloha.startline.nas.NasAnchoringPayload
 import com.aloha.startline.nas.NasCallResult
 import com.aloha.startline.nas.NasSyncPreferences
@@ -204,6 +216,8 @@ fun StartLineScreen() {
         mutableStateOf(AppScreen.Main)
     }
     var showExitConfirmDialog by rememberSaveable { mutableStateOf(false) }
+    var showRaceLogoutConfirmDialog by rememberSaveable { mutableStateOf(false) }
+    var showRaceLogoutBlockedDialog by rememberSaveable { mutableStateOf(false) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var windShiftSdDropdownExpanded by rememberSaveable { mutableStateOf(false) }
     var anchorAreaModeDropdownExpanded by rememberSaveable { mutableStateOf(false) }
@@ -309,6 +323,8 @@ fun StartLineScreen() {
 
     val nasPrefs = remember(context) { NasSyncPreferences(context) }
     val nasClient = remember { NasTelemetryClient() }
+    val regattaPrefs = remember(context) { RegattaPreferences(context) }
+    val regattaClient = remember { RegattaApiClient() }
     var nasShipCodeInput by remember { mutableStateOf("") }
     /** Mrežna greška pri NAS syncu; uspjeh prikazuje se u aktivnost-liniji ispod. */
     var nasInternetError by remember { mutableStateOf<String?>(null) }
@@ -323,6 +339,23 @@ fun StartLineScreen() {
     /** Kad je false, ispod naslova se ne prikazuju ship code / mod / Start (osim ako je sesija ili dijalog aktivan). */
     var nasInternetSectionExpanded by remember { mutableStateOf(false) }
     val nasSkipLocalTrackLog = remember { AtomicBoolean(false) }
+    var regattaLastSignalEpochMs by remember { mutableLongStateOf(0L) }
+    var regattaLastTrackEpochMs by remember { mutableLongStateOf(0L) }
+    var regattaCrossingContext by remember { mutableStateOf<RegattaCrossingContext?>(null) }
+    var regattaReportedGateCrossings by remember { mutableStateOf(setOf<String>()) }
+    var regattaStartSnapshotSentRaceId by remember { mutableStateOf("") }
+    var regattaStartSnapshotSending by remember { mutableStateOf(false) }
+    var regattaSessionLocked by remember { mutableStateOf(false) }
+    var regattaJoinModeActive by remember { mutableStateOf(false) }
+    var regattaRaceSessionRunning by remember { mutableStateOf(false) }
+    var regattaSelectedRaceId by remember { mutableStateOf("") }
+    var regattaStopRaceTapCount by remember { mutableIntStateOf(0) }
+    var regattaStopRaceLastTapEpochMs by remember { mutableLongStateOf(0L) }
+    var regattaLiveSnapshot by remember { mutableStateOf<com.aloha.startline.regatta.RegattaLiveSnapshot?>(null) }
+    var raceMapBoatMenuExpanded by remember { mutableStateOf(false) }
+    var raceMapBoatSearchQuery by remember { mutableStateOf("") }
+    var raceMapSelectedBoatId by remember { mutableStateOf("") }
+    var isSuperuserMode by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         nasShipCodeInput = nasPrefs.shipCode
     }
@@ -490,6 +523,214 @@ fun StartLineScreen() {
     }
     val averageTrueSpeedKnots = averageMotion?.speedMps?.times(METERS_PER_SECOND_TO_KNOTS)
     val averageGpsHeadingDeg = averageMotion?.headingDeg
+    val regattaTrackMotion = remember(gpsSamples) {
+        calculateLaggedAverageMotion(gpsSamples, lagSeconds = REGATTA_TRACK_MOTION_LAG_SECONDS)
+    }
+    val regattaGpsSamplesForAverage = remember(gpsSamples) {
+        val now = SystemClock.elapsedRealtime()
+        val windowMs = REGATTA_LOCATION_AVERAGE_SECONDS * 1_000L
+        gpsSamples.filter { now - it.timestampMs <= windowMs }
+    }
+    val averagedRegattaLocation = remember(regattaGpsSamplesForAverage, currentLocation) {
+        if (regattaGpsSamplesForAverage.isNotEmpty()) {
+            averageLocations(regattaGpsSamplesForAverage.map { it.location })
+        } else {
+            currentLocation?.let { Location(it) }
+        }
+    }
+    val regattaEffectiveRaceId = if (regattaJoinModeActive) {
+        regattaSelectedRaceId
+    } else {
+        regattaPrefs.joinedRaceId
+    }
+    LaunchedEffect(regattaJoinModeActive) {
+        if (!regattaJoinModeActive) {
+            regattaRaceSessionRunning = false
+            regattaSelectedRaceId = ""
+            regattaStopRaceTapCount = 0
+            regattaStopRaceLastTapEpochMs = 0L
+            regattaLiveSnapshot = null
+            raceMapSelectedBoatId = ""
+            raceMapBoatSearchQuery = ""
+            raceMapBoatMenuExpanded = false
+        }
+    }
+    LaunchedEffect(regattaEffectiveRaceId, regattaPrefs.joinedBoatId, regattaJoinModeActive, regattaRaceSessionRunning) {
+        val raceId = regattaEffectiveRaceId
+        val boatId = regattaPrefs.joinedBoatId
+        val shouldReceive = !regattaJoinModeActive || regattaRaceSessionRunning
+        if (!shouldReceive || raceId.isBlank() || boatId.isBlank()) {
+            regattaCrossingContext = null
+            regattaReportedGateCrossings = emptySet()
+            regattaStartSnapshotSentRaceId = ""
+            regattaStartSnapshotSending = false
+            return@LaunchedEffect
+        }
+        when (val live = withContext(Dispatchers.IO) { regattaClient.getLiveSnapshot(raceId) }) {
+            is NasCallResult.Ok -> {
+                regattaCrossingContext = RegattaCrossingContext(
+                    raceState = live.value.state,
+                    countdownTargetEpochMs = live.value.countdownTargetEpochMs,
+                    gates = live.value.gates
+                )
+                regattaReportedGateCrossings = live.value.crossings
+                    .filter { it.boatId == boatId && !it.gateType.equals("start", ignoreCase = true) }
+                    .map { it.gateId }
+                    .toSet()
+                if (live.value.participants.any {
+                        it.boatId == boatId && it.startSnapshotEpochMs != null
+                    }) {
+                    regattaStartSnapshotSentRaceId = raceId
+                }
+            }
+            is NasCallResult.Err -> {
+                regattaCrossingContext = null
+                regattaReportedGateCrossings = emptySet()
+            }
+        }
+    }
+    LaunchedEffect(regattaJoinModeActive, regattaRaceSessionRunning) {
+        if (!regattaJoinModeActive) {
+            regattaLiveSnapshot = null
+            return@LaunchedEffect
+        }
+        while (regattaJoinModeActive) {
+            if (!regattaRaceSessionRunning) {
+                delay(1_000L)
+                continue
+            }
+            val eventId = regattaPrefs.joinedEventId
+            if (eventId.isBlank()) {
+                regattaSelectedRaceId = ""
+                regattaLiveSnapshot = null
+            } else {
+                when (val eventResult = withContext(Dispatchers.IO) { regattaClient.getEventSnapshot(eventId) }) {
+                    is NasCallResult.Ok -> {
+                        val nowMs = System.currentTimeMillis()
+                        val selectedRace = selectRegattaRaceForToday(
+                            races = eventResult.value.races,
+                            nowEpochMs = nowMs
+                        )
+                        val raceId = selectedRace?.id.orEmpty()
+                        regattaSelectedRaceId = raceId
+                        if (raceId.isBlank()) {
+                            regattaLiveSnapshot = null
+                        } else {
+                            if (regattaPrefs.joinedRaceId != raceId) {
+                                regattaPrefs.saveJoinedEvent(eventId, raceId, regattaPrefs.joinedBoatId)
+                            }
+                            when (val liveResult = withContext(Dispatchers.IO) { regattaClient.getLiveSnapshot(raceId) }) {
+                                is NasCallResult.Ok -> regattaLiveSnapshot = liveResult.value
+                                is NasCallResult.Err -> regattaLiveSnapshot = null
+                            }
+                        }
+                    }
+                    is NasCallResult.Err -> {
+                        regattaSelectedRaceId = ""
+                        regattaLiveSnapshot = null
+                    }
+                }
+            }
+            delay(5_000L)
+        }
+    }
+    LaunchedEffect(
+        averagedRegattaLocation,
+        regattaCrossingContext,
+        regattaEffectiveRaceId,
+        regattaPrefs.joinedBoatId,
+        regattaJoinModeActive,
+        regattaRaceSessionRunning
+    ) {
+        val raceId = regattaEffectiveRaceId
+        val boatId = regattaPrefs.joinedBoatId
+        if (regattaJoinModeActive && !regattaRaceSessionRunning) return@LaunchedEffect
+        if (raceId.isBlank() || boatId.isBlank()) return@LaunchedEffect
+        if (regattaStartSnapshotSentRaceId == raceId || regattaStartSnapshotSending) return@LaunchedEffect
+        val context = regattaCrossingContext ?: return@LaunchedEffect
+        val targetEpochMs = context.countdownTargetEpochMs ?: return@LaunchedEffect
+        val nowEpochMs = System.currentTimeMillis()
+        if (regattaJoinModeActive && nowEpochMs < (targetEpochMs - 30L * 60L * 1_000L)) return@LaunchedEffect
+        if (nowEpochMs + 2_000L < targetEpochMs) return@LaunchedEffect
+        val locationAtStart = averageLocationAroundEpoch(gpsSamples, targetEpochMs, 2_000L)
+            ?: averagedRegattaLocation
+            ?: return@LaunchedEffect
+        regattaStartSnapshotSending = true
+        launch(Dispatchers.IO) {
+            val result = regattaClient.sendStartSnapshot(
+                raceId = raceId,
+                boatId = boatId,
+                latitude = locationAtStart.latitude,
+                longitude = locationAtStart.longitude,
+                epochMillis = targetEpochMs
+            )
+            if (result is NasCallResult.Ok) {
+                regattaStartSnapshotSentRaceId = raceId
+            }
+            regattaStartSnapshotSending = false
+        }
+    }
+    LaunchedEffect(
+        currentLocation,
+        regattaCrossingContext,
+        regattaEffectiveRaceId,
+        regattaPrefs.joinedBoatId,
+        regattaJoinModeActive,
+        regattaRaceSessionRunning
+    ) {
+        val raceId = regattaEffectiveRaceId
+        val boatId = regattaPrefs.joinedBoatId
+        if (regattaJoinModeActive && !regattaRaceSessionRunning) return@LaunchedEffect
+        if (raceId.isBlank() || boatId.isBlank()) return@LaunchedEffect
+        val context = regattaCrossingContext ?: return@LaunchedEffect
+        val targetEpochMs = context.countdownTargetEpochMs
+        val nowMs = System.currentTimeMillis()
+        if (
+            regattaJoinModeActive &&
+            (targetEpochMs == null || nowMs < (targetEpochMs - 30L * 60L * 1_000L))
+        ) return@LaunchedEffect
+        if (!context.raceState.equals("started", ignoreCase = true)) return@LaunchedEffect
+        val currentSample = findClosestSampleByEpoch(gpsSamples, nowMs) ?: return@LaunchedEffect
+        val previousSample = findClosestSampleByElapsed(
+            samples = gpsSamples,
+            elapsedRealtimeMs = currentSample.timestampMs - REGATTA_CROSSING_AVERAGE_WINDOW_MS
+        ) ?: findLatestSampleBeforeEpoch(gpsSamples, currentSample.timestampMs) ?: return@LaunchedEffect
+        val currentFix = averageLocationAroundElapsed(
+            samples = gpsSamples,
+            targetElapsedMillis = currentSample.timestampMs,
+            windowMillis = REGATTA_CROSSING_AVERAGE_WINDOW_MS
+        ) ?: Location(currentSample.location)
+        val previousFix = averageLocationAroundElapsed(
+            samples = gpsSamples,
+            targetElapsedMillis = previousSample.timestampMs,
+            windowMillis = REGATTA_CROSSING_AVERAGE_WINDOW_MS
+        ) ?: Location(previousSample.location)
+        val crossings = detectGateCrossings(
+            previous = previousFix,
+            current = currentFix,
+            gates = context.gates,
+            maxDistanceMeters = REGATTA_CROSSING_MAX_DISTANCE_METERS
+        )
+        if (crossings.isEmpty()) return@LaunchedEffect
+        val newGateIds = crossings.filterNot { regattaReportedGateCrossings.contains(it.id) }.map { it.id }
+        if (newGateIds.isEmpty()) return@LaunchedEffect
+        regattaReportedGateCrossings = regattaReportedGateCrossings + newGateIds
+        val prevEpochMs = elapsedToEpochMillis(previousSample.timestampMs)
+        val currEpochMs = elapsedToEpochMillis(currentSample.timestampMs)
+        launch(Dispatchers.IO) {
+            newGateIds.forEach { gateId ->
+                val crossingEpochMs = ((prevEpochMs + currEpochMs) / 2L).coerceAtLeast(1L)
+                regattaClient.sendClientCrossing(
+                    raceId = raceId,
+                    boatId = boatId,
+                    crossing = RegattaClientCrossingPayload(
+                        gateId = gateId,
+                        crossingEpochMillis = crossingEpochMs
+                    )
+                )
+            }
+        }
+    }
     val gpsSamplesForLocationAverage = remember(gpsSamples, gpsLocationAverageSeconds) {
         val now = SystemClock.elapsedRealtime()
         val windowMs = gpsLocationAverageSeconds * 1_000L
@@ -697,6 +938,97 @@ fun StartLineScreen() {
         isSecondsNegative -> Color(0xFFC62828)
         else -> Color(0xFFC62828)
     }
+    val raceNowEpochMs by produceState(initialValue = System.currentTimeMillis(), regattaJoinModeActive) {
+        while (regattaJoinModeActive) {
+            value = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+    val raceStartGate = remember(regattaLiveSnapshot) {
+        regattaLiveSnapshot?.gates?.firstOrNull { it.type.equals("start", ignoreCase = true) }
+    }
+    val raceLeftBuoyLocation = remember(raceStartGate) {
+        raceStartGate?.pointA?.let { point ->
+            Location("regatta_start_left").apply {
+                latitude = point.latitude
+                longitude = point.longitude
+            }
+        }
+    }
+    val raceRightBuoyLocation = remember(raceStartGate) {
+        raceStartGate?.pointB?.let { point ->
+            Location("regatta_start_right").apply {
+                latitude = point.latitude
+                longitude = point.longitude
+            }
+        }
+    }
+    val raceStartLineLengthMeters = remember(raceLeftBuoyLocation, raceRightBuoyLocation) {
+        if (raceLeftBuoyLocation != null && raceRightBuoyLocation != null) {
+            raceLeftBuoyLocation.distanceTo(raceRightBuoyLocation).toDouble()
+        } else {
+            null
+        }
+    }
+    val raceCountdownTarget = regattaLiveSnapshot?.countdownTargetEpochMs
+    val raceRemainingSeconds = remember(raceCountdownTarget, raceNowEpochMs) {
+        raceCountdownTarget?.let { target ->
+            ((target - raceNowEpochMs) / 1_000L)
+        }
+    }
+    val raceCountdownDisplay = remember(raceRemainingSeconds) {
+        when {
+            raceRemainingSeconds == null -> "--:--"
+            raceRemainingSeconds!! >= 0L -> formatCountdown(raceRemainingSeconds!!)
+            else -> formatPostZeroElapsed(-raceRemainingSeconds!!)
+        }
+    }
+    val raceCountdownOvertime = (raceRemainingSeconds ?: 1L) < 0L
+    val raceMapParticipants = regattaLiveSnapshot?.participants.orEmpty()
+    val regattaJoinedParticipant = raceMapParticipants.firstOrNull { it.boatId == regattaPrefs.joinedBoatId }
+    val regattaFinishEpochMs = regattaJoinedParticipant?.finishedAtEpochMs
+    val raceMapSelectedBoat = raceMapParticipants.firstOrNull { it.boatId == raceMapSelectedBoatId }
+    val raceMapFilteredParticipants = remember(raceMapParticipants, raceMapBoatSearchQuery) {
+        val query = raceMapBoatSearchQuery.trim()
+        if (query.isBlank()) {
+            raceMapParticipants
+        } else {
+            raceMapParticipants.filter { participant ->
+                participant.boatName.contains(query, ignoreCase = true) ||
+                    participant.skipperName.contains(query, ignoreCase = true)
+            }
+        }
+    }
+    val raceNotConfiguredMessage = if (
+        regattaLiveSnapshot == null ||
+        raceCountdownTarget == null ||
+        raceStartGate == null
+    ) {
+        "Regata još nije zadana"
+    } else {
+        null
+    }
+    val regattaTransmitEnabled = if (!regattaJoinModeActive) {
+        true
+    } else {
+        regattaRaceSessionRunning &&
+            raceCountdownTarget != null &&
+            raceNowEpochMs >= (raceCountdownTarget - 30L * 60L * 1000L)
+    }
+    val regattaTrackTransmitEnabled = regattaTransmitEnabled &&
+        (
+            regattaFinishEpochMs == null ||
+                raceNowEpochMs < (regattaFinishEpochMs + 15L * 60L * 1_000L)
+            )
+    val regattaRaceStatusText = when {
+        !regattaRaceSessionRunning -> "Race stopped"
+        regattaFinishEpochMs != null &&
+            raceNowEpochMs >= (regattaFinishEpochMs + 15L * 60L * 1_000L) -> "Track sync stopped (finish +15 min)"
+        raceCountdownTarget == null -> "Race setup missing"
+        raceNowEpochMs < (raceCountdownTarget - 30L * 60L * 1000L) -> "Waiting for T-30"
+        regattaTransmitEnabled -> "Live sync active"
+        else -> "Race session active"
+    }
 
     val onDoubleClickAction = rememberDoubleClickAction(timeoutMs = doubleClickTimeoutMs)
     LaunchedEffect(currentScreen, nasInternetSessionActive) {
@@ -788,14 +1120,75 @@ fun StartLineScreen() {
             nasUiTick++
         }
     }
+    LaunchedEffect(
+        averagedRegattaLocation,
+        regattaEffectiveRaceId,
+        regattaPrefs.joinedBoatId,
+        regattaTransmitEnabled
+    ) {
+        val raceId = regattaEffectiveRaceId
+        val boatId = regattaPrefs.joinedBoatId
+        val location = averagedRegattaLocation ?: return@LaunchedEffect
+        if (!regattaTransmitEnabled) return@LaunchedEffect
+        if (raceId.isBlank() || boatId.isBlank()) return@LaunchedEffect
+        val now = System.currentTimeMillis()
+        if (now - regattaLastSignalEpochMs < REGATTA_SIGNAL_INTERVAL_MS) return@LaunchedEffect
+        regattaLastSignalEpochMs = now
+        launch(Dispatchers.IO) {
+            regattaClient.sendSignalBatch(
+                raceId = raceId,
+                boatId = boatId,
+                points = listOf(
+                    RegattaSignalPoint(
+                        latitude = location.latitude,
+                        longitude = location.longitude,
+                        epochMillis = now
+                    )
+                )
+            )
+        }
+    }
+    LaunchedEffect(
+        averagedRegattaLocation,
+        regattaEffectiveRaceId,
+        regattaPrefs.joinedBoatId,
+        regattaTrackTransmitEnabled
+    ) {
+        val raceId = regattaEffectiveRaceId
+        val boatId = regattaPrefs.joinedBoatId
+        val location = averagedRegattaLocation ?: return@LaunchedEffect
+        if (!regattaTrackTransmitEnabled) return@LaunchedEffect
+        if (raceId.isBlank() || boatId.isBlank()) return@LaunchedEffect
+        val now = System.currentTimeMillis()
+        if (now - regattaLastTrackEpochMs < 30_000L) return@LaunchedEffect
+        regattaLastTrackEpochMs = now
+        launch(Dispatchers.IO) {
+            regattaClient.sendTrackBatch(
+                raceId = raceId,
+                boatId = boatId,
+                points = listOf(
+                    RegattaTrackPointPayload(
+                        latitude = location.latitude,
+                        longitude = location.longitude,
+                        epochMillis = now,
+                        speedKnots = regattaTrackMotion?.speedMps?.times(METERS_PER_SECOND_TO_KNOTS),
+                        headingDeg = regattaTrackMotion?.headingDeg
+                    )
+                )
+            )
+        }
+    }
     val settingsScrollState = rememberScrollState()
     val trackLogScrollState = rememberScrollState()
     val windDebugScrollState = rememberScrollState()
     val screenTitle = when (currentScreen) {
         AppScreen.Main -> "Start Line"
+        AppScreen.RaceStartLine -> "Race StartLine"
+        AppScreen.RaceMap -> "Race Map"
         AppScreen.Settings -> "Settings"
         AppScreen.WindShift -> "WindShift"
         AppScreen.Anchoring -> "Anchoring"
+        AppScreen.Regatta -> "Regatta"
         AppScreen.WindShiftDebug -> "Wind Debug"
         AppScreen.TrackLog -> "Track Log"
         AppScreen.TrackPreview -> "Track Preview"
@@ -1019,6 +1412,15 @@ fun StartLineScreen() {
     } else {
         lightColorScheme()
     }
+    val isLoggedInRegatta = regattaSessionLocked || regattaJoinModeActive || regattaPrefs.joinedEventId.isNotBlank()
+    val shouldSaveTrackOnExit = !isLoggedInRegatta && isTrackRecording && raceTrackPoints.isNotEmpty()
+    val exitConfirmMessage = when {
+        regattaRaceSessionRunning ->
+            "Race je aktivan i izlaskom će se brod isključiti iz race."
+        !isLoggedInRegatta && isTrackRecording ->
+            "Snima se track i izlaskom će snimanje tracka biti zaustavljeno."
+        else -> "Are you sure?"
+    }
 
     MaterialTheme(
         colorScheme = colorScheme
@@ -1031,11 +1433,28 @@ fun StartLineScreen() {
                 AlertDialog(
                     onDismissRequest = { showExitConfirmDialog = false },
                     title = { Text("Exit") },
-                    text = { Text("Are you sure?") },
+                    text = { Text(exitConfirmMessage) },
                     confirmButton = {
                         TextButton(
                             onClick = {
                                 showExitConfirmDialog = false
+                                if (shouldSaveTrackOnExit) {
+                                    val exportFile = exportRaceTrackToGpx(
+                                        context = context,
+                                        points = raceTrackPoints,
+                                        raceStartEpochMillis = raceStartEpochMillis,
+                                        leftBuoyLat = leftBuoyLat,
+                                        leftBuoyLon = leftBuoyLon,
+                                        rightBuoyLat = rightBuoyLat,
+                                        rightBuoyLon = rightBuoyLon,
+                                        raceStartLat = raceStartLat,
+                                        raceStartLon = raceStartLon
+                                    )
+                                    if (exportFile != null) {
+                                        trackLogRefreshTick += 1
+                                        trackExportStatus = "GPX saved: ${exportFile.name}"
+                                    }
+                                }
                                 MainActivity.hasShownWelcomeForCurrentProcess = false
                                 context.startService(
                                     Intent(context, RuntimeForegroundService::class.java).apply {
@@ -1051,6 +1470,46 @@ fun StartLineScreen() {
                     dismissButton = {
                         TextButton(onClick = { showExitConfirmDialog = false }) {
                             Text("No")
+                        }
+                    }
+                )
+            }
+            if (showRaceLogoutConfirmDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRaceLogoutConfirmDialog = false },
+                    title = { Text("Logout from race") },
+                    text = { Text("Jesi siguran?") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showRaceLogoutConfirmDialog = false
+                                regattaPrefs.clearJoinedEvent()
+                                regattaSessionLocked = false
+                                regattaJoinModeActive = false
+                                regattaRaceSessionRunning = false
+                                regattaSelectedRaceId = ""
+                                regattaLiveSnapshot = null
+                                currentScreen = AppScreen.Regatta
+                            }
+                        ) { Text("Yes") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRaceLogoutConfirmDialog = false }) {
+                            Text("No")
+                        }
+                    }
+                )
+            }
+            if (showRaceLogoutBlockedDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRaceLogoutBlockedDialog = false },
+                    title = { Text("Logout from race") },
+                    text = {
+                        Text("Race is aktiv. Moraš prvo zaustaviti race na Startline race stranici.")
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showRaceLogoutBlockedDialog = false }) {
+                            Text("OK")
                         }
                     }
                 )
@@ -1090,12 +1549,16 @@ fun StartLineScreen() {
                 }
                 return@Surface
             }
-            if (currentScreen == AppScreen.Main) {
+            if (currentScreen == AppScreen.Main && !regattaJoinModeActive) {
                 StartLine(
                     headerContent = {
                         AppHeader(
                             screenTitle = screenTitle,
                             currentScreen = currentScreen,
+                            regattaSessionLocked = regattaSessionLocked,
+                            regattaJoinModeActive = regattaJoinModeActive,
+                            isSuperuserMode = isSuperuserMode,
+                            showRaceLogout = regattaSessionLocked || regattaJoinModeActive,
                             isTrackRecording = isTrackRecording,
                             averageTrueSpeedKnots = averageTrueSpeedKnots,
                             menuExpanded = menuExpanded,
@@ -1109,6 +1572,13 @@ fun StartLineScreen() {
                                 }
                             },
                             onExitClick = { showExitConfirmDialog = true },
+                            onRaceLogoutClick = {
+                                if (regattaRaceSessionRunning) {
+                                    showRaceLogoutBlockedDialog = true
+                                } else {
+                                    showRaceLogoutConfirmDialog = true
+                                }
+                            },
                             titleColor = Color.White,
                             speedColor = HIGH_CONTRAST_YELLOW,
                             menuColor = Color.White
@@ -1281,11 +1751,49 @@ fun StartLineScreen() {
             }
             val isWindShiftScreen = currentScreen == AppScreen.WindShift
             val isAnchoringScreen = currentScreen == AppScreen.Anchoring
+            val isRegattaScreen = currentScreen == AppScreen.Regatta
+            val isRaceStartLineScreen = currentScreen == AppScreen.RaceStartLine
+            val isRaceMapScreen = currentScreen == AppScreen.RaceMap
             val isSettingsScreen = currentScreen == AppScreen.Settings
             val isTrackLogScreen = currentScreen == AppScreen.TrackLog
             val isHelpScreen = currentScreen == AppScreen.Help
             val useStartLikeHeaderStyle =
-                isWindShiftScreen || isAnchoringScreen || isSettingsScreen || isTrackLogScreen || isHelpScreen
+                isWindShiftScreen || isAnchoringScreen || isRegattaScreen ||
+                    isRaceStartLineScreen || isRaceMapScreen ||
+                    isSettingsScreen || isTrackLogScreen || isHelpScreen
+            LaunchedEffect(regattaSessionLocked, currentScreen) {
+                if (regattaJoinModeActive) {
+                    val blockedJoinScreens = setOf(
+                        AppScreen.Main,
+                        AppScreen.WindShift,
+                        AppScreen.Anchoring,
+                        AppScreen.Regatta,
+                        AppScreen.TrackLog,
+                        AppScreen.WindShiftDebug,
+                        AppScreen.Settings,
+                        AppScreen.Help
+                    )
+                    if (currentScreen in blockedJoinScreens) {
+                        currentScreen = AppScreen.RaceStartLine
+                    }
+                } else if (regattaSessionLocked) {
+                    val blockedScreens = setOf(
+                        AppScreen.Main,
+                        AppScreen.Anchoring,
+                        AppScreen.TrackLog,
+                        AppScreen.WindShiftDebug,
+                        AppScreen.Settings
+                    )
+                    if (currentScreen in blockedScreens) {
+                        currentScreen = AppScreen.Regatta
+                    }
+                }
+            }
+            LaunchedEffect(isSuperuserMode, currentScreen) {
+                if (!isSuperuserMode && currentScreen == AppScreen.WindShiftDebug) {
+                    currentScreen = AppScreen.Main
+                }
+            }
             val view = LocalView.current
             val halfStatusBarTopPaddingPx = remember(view) {
                 (ViewCompat.getRootWindowInsets(view)
@@ -1328,19 +1836,57 @@ fun StartLineScreen() {
                 AppHeader(
                     screenTitle = screenTitle,
                     currentScreen = currentScreen,
+                    regattaSessionLocked = regattaSessionLocked,
+                    regattaJoinModeActive = regattaJoinModeActive,
+                    isSuperuserMode = isSuperuserMode,
+                    showRaceLogout = regattaSessionLocked || regattaJoinModeActive,
                     isTrackRecording = isTrackRecording,
                     averageTrueSpeedKnots = averageTrueSpeedKnots,
                     menuExpanded = menuExpanded,
                     onMenuExpandedChange = { menuExpanded = it },
-                    onScreenSelected = { selected -> currentScreen = selected },
+                    onScreenSelected = { selected ->
+                        if (regattaJoinModeActive) {
+                            currentScreen = when (selected) {
+                                AppScreen.RaceStartLine -> AppScreen.RaceStartLine
+                                AppScreen.RaceMap -> AppScreen.RaceMap
+                                else -> AppScreen.RaceStartLine
+                            }
+                        } else if (
+                            regattaSessionLocked &&
+                            selected in setOf(
+                                AppScreen.Main,
+                                AppScreen.Anchoring,
+                                AppScreen.TrackLog,
+                                AppScreen.WindShiftDebug,
+                                AppScreen.Settings
+                            )
+                        ) {
+                            currentScreen = AppScreen.Regatta
+                        } else {
+                            currentScreen = selected
+                        }
+                    },
                     onToggleMainWindShift = {
-                        if (currentScreen == AppScreen.Main) {
+                        if (regattaJoinModeActive) {
+                            currentScreen = if (currentScreen == AppScreen.RaceStartLine) {
+                                AppScreen.RaceMap
+                            } else {
+                                AppScreen.RaceStartLine
+                            }
+                        } else if (currentScreen == AppScreen.Main) {
                             currentScreen = AppScreen.WindShift
                         } else if (currentScreen == AppScreen.WindShift) {
                             currentScreen = AppScreen.Main
                         }
                     },
                     onExitClick = { showExitConfirmDialog = true },
+                    onRaceLogoutClick = {
+                        if (regattaRaceSessionRunning) {
+                            showRaceLogoutBlockedDialog = true
+                        } else {
+                            showRaceLogoutConfirmDialog = true
+                        }
+                    },
                     titleColor = if (useStartLikeHeaderStyle) Color.White else MaterialTheme.colorScheme.onBackground,
                     speedColor = if (useStartLikeHeaderStyle) HIGH_CONTRAST_YELLOW else MaterialTheme.colorScheme.onBackground,
                     menuColor = if (useStartLikeHeaderStyle) Color.White else MaterialTheme.colorScheme.onBackground
@@ -1348,7 +1894,14 @@ fun StartLineScreen() {
 
                 Spacer(
                     modifier = Modifier.height(
-                        if (isWindShiftScreen || isAnchoringScreen) 0.dp else 24.dp
+                        if (
+                            isWindShiftScreen || isAnchoringScreen || isRegattaScreen ||
+                            isRaceStartLineScreen || isRaceMapScreen
+                        ) {
+                            0.dp
+                        } else {
+                            24.dp
+                        }
                     )
                 )
 
@@ -2854,8 +3407,300 @@ fun StartLineScreen() {
                     }
                     return@Column
                 }
+
+                if (currentScreen == AppScreen.Regatta) {
+                    RegattaScreen(
+                        apiClient = regattaClient,
+                        prefs = regattaPrefs,
+                        currentLocation = currentLocation,
+                        onSessionStateChanged = { locked -> regattaSessionLocked = locked },
+                        onOpenRaceStartLine = { currentScreen = AppScreen.RaceStartLine },
+                        onJoinModeChanged = { active -> regattaJoinModeActive = active }
+                    )
+                    return@Column
+                }
+                if (currentScreen == AppScreen.RaceStartLine) {
+                    StartLine(
+                        headerContent = {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                AppHeader(
+                                    screenTitle = screenTitle,
+                                    currentScreen = currentScreen,
+                                    regattaSessionLocked = regattaSessionLocked,
+                                    regattaJoinModeActive = regattaJoinModeActive,
+                                    isSuperuserMode = isSuperuserMode,
+                                    showRaceLogout = regattaSessionLocked || regattaJoinModeActive,
+                                    isTrackRecording = isTrackRecording,
+                                    averageTrueSpeedKnots = averageTrueSpeedKnots,
+                                    menuExpanded = menuExpanded,
+                                    onMenuExpandedChange = { menuExpanded = it },
+                                    onScreenSelected = { selected ->
+                                        currentScreen = when (selected) {
+                                            AppScreen.RaceMap -> AppScreen.RaceMap
+                                            else -> AppScreen.RaceStartLine
+                                        }
+                                    },
+                                    onToggleMainWindShift = {
+                                        currentScreen = AppScreen.RaceMap
+                                    },
+                                    onExitClick = { showExitConfirmDialog = true },
+                                    onRaceLogoutClick = {
+                                        if (regattaRaceSessionRunning) {
+                                            showRaceLogoutBlockedDialog = true
+                                        } else {
+                                            showRaceLogoutConfirmDialog = true
+                                        }
+                                    },
+                                    titleColor = Color.White,
+                                    speedColor = HIGH_CONTRAST_YELLOW,
+                                    menuColor = Color.White
+                                )
+                                if (!regattaRaceSessionRunning) {
+                                    Button(
+                                        onClick = {
+                                            regattaRaceSessionRunning = true
+                                            regattaStopRaceTapCount = 0
+                                            regattaStopRaceLastTapEpochMs = 0L
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                    ) { Text("Start Race") }
+                                } else {
+                                    Button(
+                                        onClick = {
+                                            val now = System.currentTimeMillis()
+                                            if (now - regattaStopRaceLastTapEpochMs > 2_000L) {
+                                                regattaStopRaceTapCount = 0
+                                            }
+                                            regattaStopRaceTapCount += 1
+                                            regattaStopRaceLastTapEpochMs = now
+                                            if (regattaStopRaceTapCount >= 3) {
+                                                regattaRaceSessionRunning = false
+                                                regattaStopRaceTapCount = 0
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
+                                    ) {
+                                        Text("Stop Race (tripl tap)")
+                                    }
+                                }
+                                Text(
+                                    text = regattaRaceStatusText,
+                                    color = Color(0xFFBDBDBD),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        },
+                        countdownDisplayText = raceCountdownDisplay,
+                        countdownOvertimeActive = raceCountdownOvertime,
+                        isCountdownRunning = false,
+                        speedDisplayText = "--",
+                        leftBuoySet = raceLeftBuoyLocation != null,
+                        rightBuoySet = raceRightBuoyLocation != null,
+                        lineLengthDisplayText = raceStartLineLengthMeters?.let {
+                            String.format(Locale.US, "%.0f m", it)
+                        } ?: "-- m",
+                        lineEtaDisplayText = "--:--",
+                        distanceDisplayText = "-- m",
+                        etaDeltaDisplayText = "-- sec",
+                        statusFrameColor = Color(0xFF616161),
+                        timerTopMessage = raceNotConfiguredMessage,
+                        showCountdownAdjustButtons = false,
+                        enableCountdownTapRound = false,
+                        showStartStopResetButtons = false,
+                        showBuoyControls = false,
+                        showInfoRowWhenControlsHidden = true,
+                        leftInfoText = "Start regata",
+                        rightInfoText = "Time ${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(raceNowEpochMs))}",
+                        mapContent = {
+                            StartLineMap(
+                                leftBuoyLocation = raceLeftBuoyLocation,
+                                rightBuoyLocation = raceRightBuoyLocation,
+                                currentLocation = currentLocation,
+                                raceTrackPoints = raceTrackPoints,
+                                averageGpsHeadingDeg = averageGpsHeadingDeg,
+                                mapMode = mapMode,
+                                mapRenderMode = mapRenderMode,
+                                mapZoom = mapZoom,
+                                onToggleMapMode = {},
+                                onToggleCanvasOsmFromMap = {},
+                                onZoomIn = {},
+                                onZoomOut = {}
+                            )
+                        }
+                    )
+                    return@Column
+                }
+                if (currentScreen == AppScreen.RaceMap) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        TextButton(
+                            onClick = { currentScreen = AppScreen.RaceStartLine },
+                            colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF90CAF9))
+                        ) {
+                            Text("Race StartLine", fontWeight = FontWeight.Bold)
+                        }
+                        Text(
+                            text = raceNotConfiguredMessage ?: "Race Map",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { raceMapBoatMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                val selectedLabel = raceMapSelectedBoat?.boatName ?: "Odaberi brod"
+                                Text(selectedLabel)
+                            }
+                            DropdownMenu(
+                                expanded = raceMapBoatMenuExpanded,
+                                onDismissRequest = { raceMapBoatMenuExpanded = false }
+                            ) {
+                                OutlinedTextField(
+                                    value = raceMapBoatSearchQuery,
+                                    onValueChange = { raceMapBoatSearchQuery = it },
+                                    label = { Text("Search boat") },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp)
+                                )
+                                raceMapFilteredParticipants.take(30).forEach { participant ->
+                                    val speed = participant.lastSpeedKnots?.let {
+                                        String.format(Locale.US, "%.1f kn", it)
+                                    } ?: "-- kn"
+                                    DropdownMenuItem(
+                                        text = { Text("${participant.boatName} · $speed") },
+                                        onClick = {
+                                            raceMapSelectedBoatId = participant.boatId
+                                            raceMapBoatMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF111111))
+                        ) {
+                            JoinRaceMapView(
+                                gates = regattaLiveSnapshot?.gates.orEmpty(),
+                                participants = raceMapParticipants,
+                                selectedBoatId = raceMapSelectedBoatId
+                            )
+                        }
+                    }
+                    return@Column
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun JoinRaceMapView(
+    gates: List<com.aloha.startline.regatta.RegattaGate>,
+    participants: List<com.aloha.startline.regatta.RegattaParticipantLive>,
+    selectedBoatId: String
+) {
+    val visibleParticipants = participants.filter {
+        it.lastLatitude != null && it.lastLongitude != null
+    }
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
+            MapView(ctx).apply {
+                setTileSource(TileSourceFactory.MAPNIK)
+                setMultiTouchControls(true)
+                setBuiltInZoomControls(false)
+                isTilesScaledToDpi = true
+                controller.setZoom(14.0)
+            }
+        },
+        update = { mapView ->
+            mapView.overlays.clear()
+            val boundsPoints = mutableListOf<GeoPoint>()
+
+            gates.forEach { gate ->
+                val a = GeoPoint(gate.pointA.latitude, gate.pointA.longitude)
+                val b = GeoPoint(gate.pointB.latitude, gate.pointB.longitude)
+                boundsPoints += a
+                boundsPoints += b
+                mapView.overlays.add(
+                    Polyline(mapView).apply {
+                        outlinePaint.color = when (gate.type.lowercase(Locale.US)) {
+                            "start" -> android.graphics.Color.YELLOW
+                            "finish" -> android.graphics.Color.RED
+                            else -> android.graphics.Color.rgb(66, 165, 245)
+                        }
+                        outlinePaint.strokeWidth = 7f
+                        setPoints(listOf(a, b))
+                        title = gate.name
+                    }
+                )
+            }
+
+            var selectedPoint: GeoPoint? = null
+            visibleParticipants.forEach { participant ->
+                val lat = participant.lastLatitude ?: return@forEach
+                val lon = participant.lastLongitude ?: return@forEach
+                val point = GeoPoint(lat, lon)
+                boundsPoints += point
+                val selected = participant.boatId == selectedBoatId
+                if (selected) {
+                    selectedPoint = point
+                }
+                mapView.overlays.add(
+                    Marker(mapView).apply {
+                        position = point
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                        icon = createBoatMarkerDrawable(
+                            sizePx = if (selected) 44 else 28,
+                            color = if (selected) android.graphics.Color.YELLOW else android.graphics.Color.CYAN
+                        )
+                        title = participant.boatName
+                        subDescription = participant.lastSpeedKnots?.let {
+                            String.format(Locale.US, "%.1f kn", it)
+                        } ?: "-- kn"
+                    }
+                )
+            }
+
+            when {
+                selectedPoint != null -> {
+                    mapView.controller.setCenter(selectedPoint)
+                    mapView.controller.setZoom(18.0)
+                }
+                boundsPoints.size >= 2 -> {
+                    mapView.zoomToBoundingBox(BoundingBox.fromGeoPointsSafe(boundsPoints), true, 48)
+                }
+                boundsPoints.size == 1 -> {
+                    mapView.controller.setCenter(boundsPoints.first())
+                    mapView.controller.setZoom(17.0)
+                }
+            }
+            mapView.invalidate()
+        }
+    )
+}
+
+private fun createBoatMarkerDrawable(sizePx: Int, color: Int): ShapeDrawable {
+    return ShapeDrawable(OvalShape()).apply {
+        intrinsicWidth = sizePx
+        intrinsicHeight = sizePx
+        paint.color = color
+        setBounds(0, 0, sizePx, sizePx)
     }
 }
 
@@ -2916,6 +3761,11 @@ private const val RACE_TRACK_LOG_INTERVAL_MS = 10_000L
 private const val RACE_TRACK_HEADING_CHANGE_DEG = 10.0
 private const val RACE_TRACK_MIN_MOVE_FOR_HEADING_M = 5.0
 private const val NAS_INTERNET_SYNC_INTERVAL_MS = 30_000L
+private const val REGATTA_TRACK_MOTION_LAG_SECONDS = 10L
+private const val REGATTA_LOCATION_AVERAGE_SECONDS = 2L
+private const val REGATTA_SIGNAL_INTERVAL_MS = 30_000L
+private const val REGATTA_CROSSING_MAX_DISTANCE_METERS = 15.0
+private const val REGATTA_CROSSING_AVERAGE_WINDOW_MS = 2_000L
 private const val DEFAULT_ANCHOR_RADIUS_METERS = 35.0
 private const val MIN_ANCHOR_RADIUS_METERS = 1.0
 private const val MAX_ANCHOR_RADIUS_METERS = 500.0
@@ -2936,6 +3786,11 @@ private data class RaceTrackPoint(
     val epochMillis: Long
 )
 private data class AverageMotion(val speedMps: Double, val headingDeg: Double?)
+private data class RegattaCrossingContext(
+    val raceState: String,
+    val countdownTargetEpochMs: Long?,
+    val gates: List<com.aloha.startline.regatta.RegattaGate>
+)
 private data class LineDistanceInfo(
     val distanceMeters: Double,
     val signedDistanceMeters: Double,
@@ -3079,6 +3934,38 @@ private fun calculateAverageMotion(samples: List<GpsSample>): AverageMotion? {
     )
 }
 
+private fun calculateLaggedAverageMotion(
+    samples: List<GpsSample>,
+    lagSeconds: Long
+): AverageMotion? {
+    if (samples.size < 2) return null
+    val sorted = samples.sortedBy { it.timestampMs }
+    val current = sorted.last()
+    val lagMs = lagSeconds.coerceAtLeast(1L) * 1_000L
+    val targetTs = current.timestampMs - lagMs
+    if (targetTs < sorted.first().timestampMs) return null
+    var anchorIndex = -1
+    var bestDiffMs = Long.MAX_VALUE
+    for (candidateIndex in 0 until sorted.lastIndex) {
+        val diffMs = abs(sorted[candidateIndex].timestampMs - targetTs)
+        if (diffMs < bestDiffMs) {
+            bestDiffMs = diffMs
+            anchorIndex = candidateIndex
+        }
+    }
+    if (anchorIndex < 0) return null
+    val anchor = sorted[anchorIndex]
+    val dtSeconds = (current.timestampMs - anchor.timestampMs) / 1000.0
+    if (dtSeconds <= 0.0) return null
+    val distanceMeters = anchor.location.distanceTo(current.location).toDouble()
+    val averageSpeedMps = distanceMeters / dtSeconds
+    val averageHeadingDeg = normalizeDegrees(anchor.location.bearingTo(current.location).toDouble())
+    return AverageMotion(
+        speedMps = averageSpeedMps,
+        headingDeg = averageHeadingDeg
+    )
+}
+
 private fun headingToUnitVector(headingDeg: Double): Point2D {
     val rad = Math.toRadians(headingDeg)
     return Point2D(
@@ -3138,6 +4025,90 @@ private fun formatPostZeroElapsed(totalSeconds: Long): String {
     }
 }
 
+private fun elapsedToEpochMillis(elapsedRealtimeMs: Long): Long {
+    return System.currentTimeMillis() - (SystemClock.elapsedRealtime() - elapsedRealtimeMs)
+}
+
+private fun findClosestSampleByEpoch(samples: List<GpsSample>, epochMillis: Long): GpsSample? {
+    if (samples.isEmpty()) return null
+    val elapsedTarget = SystemClock.elapsedRealtime() - (System.currentTimeMillis() - epochMillis)
+    return samples.minByOrNull { abs(it.timestampMs - elapsedTarget) }
+}
+
+private fun findLatestSampleBeforeEpoch(samples: List<GpsSample>, elapsedRealtimeMs: Long): GpsSample? {
+    return samples
+        .filter { it.timestampMs < elapsedRealtimeMs }
+        .maxByOrNull { it.timestampMs }
+}
+
+private fun findClosestSampleByElapsed(
+    samples: List<GpsSample>,
+    elapsedRealtimeMs: Long
+): GpsSample? {
+    if (samples.isEmpty()) return null
+    return samples.minByOrNull { abs(it.timestampMs - elapsedRealtimeMs) }
+}
+
+private fun averageLocationAroundEpoch(
+    samples: List<GpsSample>,
+    targetEpochMillis: Long,
+    windowMillis: Long
+): Location? {
+    if (samples.isEmpty()) return null
+    val halfWindow = (windowMillis.coerceAtLeast(1L)) / 2L
+    val inWindow = samples.filter {
+        abs(elapsedToEpochMillis(it.timestampMs) - targetEpochMillis) <= halfWindow
+    }
+    return if (inWindow.isNotEmpty()) {
+        averageLocations(inWindow.map { it.location })
+    } else {
+        findClosestSampleByEpoch(samples, targetEpochMillis)?.location?.let { Location(it) }
+    }
+}
+
+private fun averageLocationAroundElapsed(
+    samples: List<GpsSample>,
+    targetElapsedMillis: Long,
+    windowMillis: Long
+): Location? {
+    if (samples.isEmpty()) return null
+    val halfWindow = (windowMillis.coerceAtLeast(1L)) / 2L
+    val inWindow = samples.filter { abs(it.timestampMs - targetElapsedMillis) <= halfWindow }
+    return if (inWindow.isNotEmpty()) {
+        averageLocations(inWindow.map { it.location })
+    } else {
+        findClosestSampleByElapsed(samples, targetElapsedMillis)?.location?.let { Location(it) }
+    }
+}
+
+private fun detectGateCrossings(
+    previous: Location,
+    current: Location,
+    gates: List<com.aloha.startline.regatta.RegattaGate>,
+    maxDistanceMeters: Double
+): List<com.aloha.startline.regatta.RegattaGate> {
+    if (gates.isEmpty()) return emptyList()
+    return gates.filter { gate ->
+        if (gate.type.equals("start", ignoreCase = true)) {
+            false
+        } else {
+            val gateA = Location("regatta_gate_a").apply {
+                latitude = gate.pointA.latitude
+                longitude = gate.pointA.longitude
+            }
+            val gateB = Location("regatta_gate_b").apply {
+                latitude = gate.pointB.latitude
+                longitude = gate.pointB.longitude
+            }
+            val prevInfo = distanceToStartLineInfo(previous, gateA, gateB)
+            val currInfo = distanceToStartLineInfo(current, gateA, gateB)
+            val oppositeSides = (prevInfo.signedDistanceMeters > 0.0) != (currInfo.signedDistanceMeters > 0.0)
+            val nearLine = prevInfo.distanceMeters <= maxDistanceMeters && currInfo.distanceMeters <= maxDistanceMeters
+            oppositeSides && nearLine
+        }
+    }
+}
+
 /** Prije nule: preostalo; na/poslije nule: proteklo od starta (00:00, 00:01, …). */
 private fun formatCountdownOrOvertime(remainingCountdownSeconds: Long, postZeroElapsedSeconds: Long): String {
     return if (remainingCountdownSeconds > 0L) {
@@ -3172,6 +4143,10 @@ private fun playCountdownCue(toneGenerator: ToneGenerator, remainingSeconds: Lon
 private fun AppHeader(
     screenTitle: String,
     currentScreen: AppScreen,
+    regattaSessionLocked: Boolean,
+    regattaJoinModeActive: Boolean,
+    isSuperuserMode: Boolean,
+    showRaceLogout: Boolean,
     isTrackRecording: Boolean,
     averageTrueSpeedKnots: Double?,
     menuExpanded: Boolean,
@@ -3179,6 +4154,7 @@ private fun AppHeader(
     onScreenSelected: (AppScreen) -> Unit,
     onToggleMainWindShift: () -> Unit,
     onExitClick: () -> Unit,
+    onRaceLogoutClick: () -> Unit,
     menuIconFontSize: TextUnit = 26.sp,
     titleColor: Color = MaterialTheme.colorScheme.onBackground,
     speedColor: Color = MaterialTheme.colorScheme.onBackground,
@@ -3241,13 +4217,48 @@ private fun AppHeader(
                         expanded = menuExpanded,
                         onDismissRequest = { onMenuExpandedChange(false) }
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("Start Line") },
-                            onClick = {
-                                onScreenSelected(AppScreen.Main)
-                                onMenuExpandedChange(false)
-                            }
-                        )
+                        if (regattaJoinModeActive) {
+                            DropdownMenuItem(
+                                text = { Text("Race StartLine") },
+                                onClick = {
+                                    onScreenSelected(AppScreen.RaceStartLine)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Race Map") },
+                                onClick = {
+                                    onScreenSelected(AppScreen.RaceMap)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Exit") },
+                                onClick = {
+                                    onMenuExpandedChange(false)
+                                    onExitClick()
+                                }
+                            )
+                            return@DropdownMenu
+                        }
+                        if (showRaceLogout) {
+                            DropdownMenuItem(
+                                text = { Text("Logout from race") },
+                                onClick = {
+                                    onMenuExpandedChange(false)
+                                    onRaceLogoutClick()
+                                }
+                            )
+                        }
+                        if (!regattaSessionLocked) {
+                            DropdownMenuItem(
+                                text = { Text("Start Line") },
+                                onClick = {
+                                    onScreenSelected(AppScreen.Main)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("WindShift") },
                             onClick = {
@@ -3255,34 +4266,47 @@ private fun AppHeader(
                                 onMenuExpandedChange(false)
                             }
                         )
+                        if (!regattaSessionLocked) {
+                            DropdownMenuItem(
+                                text = { Text("Anchoring") },
+                                onClick = {
+                                    onScreenSelected(AppScreen.Anchoring)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                        }
                         DropdownMenuItem(
-                            text = { Text("Anchoring") },
+                            text = { Text("Regatta") },
                             onClick = {
-                                onScreenSelected(AppScreen.Anchoring)
+                                onScreenSelected(AppScreen.Regatta)
                                 onMenuExpandedChange(false)
                             }
                         )
-                        DropdownMenuItem(
-                            text = { Text("Settings") },
-                            onClick = {
-                                onScreenSelected(AppScreen.Settings)
-                                onMenuExpandedChange(false)
+                        if (!regattaSessionLocked) {
+                            DropdownMenuItem(
+                                text = { Text("Settings") },
+                                onClick = {
+                                    onScreenSelected(AppScreen.Settings)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Track Log") },
+                                onClick = {
+                                    onScreenSelected(AppScreen.TrackLog)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                            if (isSuperuserMode) {
+                                DropdownMenuItem(
+                                    text = { Text("Wind Debug") },
+                                    onClick = {
+                                        onScreenSelected(AppScreen.WindShiftDebug)
+                                        onMenuExpandedChange(false)
+                                    }
+                                )
                             }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Track Log") },
-                            onClick = {
-                                onScreenSelected(AppScreen.TrackLog)
-                                onMenuExpandedChange(false)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Wind Debug") },
-                            onClick = {
-                                onScreenSelected(AppScreen.WindShiftDebug)
-                                onMenuExpandedChange(false)
-                            }
-                        )
+                        }
                         DropdownMenuItem(
                             text = { Text("Help") },
                             onClick = {
@@ -3306,9 +4330,12 @@ private fun AppHeader(
 
 private enum class AppScreen {
     Main,
+    RaceStartLine,
+    RaceMap,
     Settings,
     WindShift,
     Anchoring,
+    Regatta,
     WindShiftDebug,
     TrackLog,
     TrackPreview,
@@ -3364,6 +4391,21 @@ private enum class WindShiftStdFilterMode(val label: String, val sigmaMultiplier
     Off("Off", null),
     OneSigma(">1 SD", 1.0),
     TwoSigma(">2 SD", 2.0)
+}
+
+private fun selectRegattaRaceForToday(
+    races: List<com.aloha.startline.regatta.RegattaRaceSummary>,
+    nowEpochMs: Long
+): com.aloha.startline.regatta.RegattaRaceSummary? {
+    if (races.isEmpty()) return null
+    val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(nowEpochMs))
+    val todayRaces = races.filter { race ->
+        val epoch = race.countdownTargetEpochMs ?: return@filter false
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(epoch)) == today
+    }.sortedBy { it.countdownTargetEpochMs ?: Long.MAX_VALUE }
+    if (todayRaces.isEmpty()) return null
+    val future = todayRaces.firstOrNull { (it.countdownTargetEpochMs ?: 0L) >= nowEpochMs }
+    return future ?: todayRaces.lastOrNull()
 }
 
 private fun signedShortestAngleDegrees(fromDeg: Double, toDeg: Double): Double {
