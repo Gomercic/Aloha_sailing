@@ -80,6 +80,12 @@ data class RegattaPenaltySummary(
     val createdAt: String
 )
 
+data class RegattaNoticePost(
+    val id: String,
+    val noticeText: String,
+    val publishedAt: String?
+)
+
 data class RegattaEventSnapshot(
     val eventId: String,
     val name: String,
@@ -93,6 +99,7 @@ data class RegattaEventSnapshot(
     val maxBoats: Int,
     val noticeBoard: String,
     val noticeBoardUpdatedAt: String?,
+    val noticePosts: List<RegattaNoticePost>,
     val status: String,
     val boats: List<RegattaBoatSummary>,
     val races: List<RegattaRaceSummary>,

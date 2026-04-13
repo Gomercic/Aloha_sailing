@@ -54,6 +54,24 @@ data class PublicRegattaEventSummary(
     val pointsCount: Int
 )
 
+data class AdminRegattaEventSummary(
+    val eventId: String,
+    val name: String,
+    val joinCode: String,
+    val organizerCodeHash: String,
+    val organizerName: String,
+    val status: String,
+    val isPublic: Boolean,
+    val startDate: String?,
+    val endDate: String?,
+    val raceEndTime: String?,
+    val regattaLengthNm: Double,
+    val updatedAt: String,
+    val boatsCount: Int,
+    val racesCount: Int,
+    val pointsCount: Int
+)
+
 data class RegattaSignalPoint(
     val latitude: Double,
     val longitude: Double,
@@ -80,6 +98,16 @@ data class RegattaBoatTrackPoint(
     val epochMillis: Long,
     val speedKnots: Double?,
     val headingDeg: Double?
+)
+
+data class SuperuserLoginResult(
+    val username: String,
+    val superuserToken: String
+)
+
+data class AdminOrganizerSessionResult(
+    val eventId: String,
+    val organizerToken: String
 )
 
 class RegattaApiClient(
@@ -241,6 +269,93 @@ class RegattaApiClient(
                     )
                 }
             }
+        }
+    }
+
+    fun superuserLogin(username: String, password: String): NasCallResult<SuperuserLoginResult> {
+        val request = Request.Builder()
+            .url("${NasDefaults.BASE_URL}/v1/admin/login")
+            .post(
+                JSONObject().apply {
+                    put("username", username.trim())
+                    put("password", password)
+                }.toString().toRequestBody(JSON_MEDIA)
+            )
+            .header("X-API-Key", NasDefaults.API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return execute(request) { body ->
+            val json = JSONObject(body)
+            SuperuserLoginResult(
+                username = json.optString("username"),
+                superuserToken = json.optString("superuser_token")
+            )
+        }
+    }
+
+    fun listAdminEvents(superuserToken: String): NasCallResult<List<AdminRegattaEventSummary>> {
+        val request = Request.Builder()
+            .url("${NasDefaults.BASE_URL}/v1/admin/regattas/events?superuser_token=${superuserToken.trim()}")
+            .get()
+            .header("X-API-Key", NasDefaults.API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return execute(request) { body ->
+            val json = JSONObject(body)
+            val events = json.optJSONArray("events") ?: JSONArray()
+            buildList {
+                for (i in 0 until events.length()) {
+                    val item = events.optJSONObject(i) ?: continue
+                    add(
+                        AdminRegattaEventSummary(
+                            eventId = item.optString("event_id"),
+                            name = item.optString("name"),
+                            joinCode = item.optString("join_code"),
+                            organizerCodeHash = item.optString("organizer_code_hash"),
+                            organizerName = item.optString("organizer_name"),
+                            status = item.optString("status"),
+                            isPublic = item.optBoolean("is_public", false),
+                            startDate = item.optString("start_date").takeIf { it.isNotBlank() },
+                            endDate = item.optString("end_date").takeIf { it.isNotBlank() },
+                            raceEndTime = item.optString("race_end_time").takeIf { it.isNotBlank() },
+                            regattaLengthNm = item.optDouble("regatta_length_nm").takeIf { !it.isNaN() } ?: 0.0,
+                            updatedAt = item.optString("updated_at"),
+                            boatsCount = item.optInt("boats_count", 0),
+                            racesCount = item.optInt("races_count", 0),
+                            pointsCount = item.optInt("points_count", 0)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteAdminEvent(eventId: String, superuserToken: String): NasCallResult<Unit> {
+        val request = Request.Builder()
+            .url("${NasDefaults.BASE_URL}/v1/admin/regattas/events/${eventId.trim()}?superuser_token=${superuserToken.trim()}")
+            .delete()
+            .header("X-API-Key", NasDefaults.API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return execute(request) { Unit }
+    }
+
+    fun createAdminOrganizerSession(
+        eventId: String,
+        superuserToken: String
+    ): NasCallResult<AdminOrganizerSessionResult> {
+        val request = Request.Builder()
+            .url("${NasDefaults.BASE_URL}/v1/admin/regattas/events/${eventId.trim()}/organizer-session?superuser_token=${superuserToken.trim()}")
+            .post("{}".toRequestBody(JSON_MEDIA))
+            .header("X-API-Key", NasDefaults.API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return execute(request) { body ->
+            val json = JSONObject(body)
+            AdminOrganizerSessionResult(
+                eventId = json.optString("event_id"),
+                organizerToken = json.optString("organizer_token")
+            )
         }
     }
 
@@ -509,6 +624,26 @@ class RegattaApiClient(
         }
     }
 
+    fun overrideCrossingStatus(
+        raceId: String,
+        crossingId: String,
+        organizerToken: String,
+        status: String
+    ): NasCallResult<Unit> {
+        val request = Request.Builder()
+            .url("${NasDefaults.BASE_URL}/v1/regattas/races/${raceId.trim()}/crossings/${crossingId.trim()}/override")
+            .post(
+                JSONObject().apply {
+                    put("organizer_token", organizerToken.trim())
+                    put("status", status.trim())
+                }.toString().toRequestBody(JSON_MEDIA)
+            )
+            .header("X-API-Key", NasDefaults.API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return execute(request) { Unit }
+    }
+
     fun sendTrackBatch(
         raceId: String,
         boatId: String,
@@ -676,6 +811,7 @@ class RegattaApiClient(
             maxBoats = json.optInt("max_boats", 50),
             noticeBoard = json.optString("notice_board"),
             noticeBoardUpdatedAt = json.optString("notice_board_updated_at").takeIf { it.isNotBlank() },
+            noticePosts = parseNoticePosts(json.optJSONArray("notice_posts")),
             status = json.optString("status", "draft"),
             boats = parseBoats(json.optJSONArray("boats")),
             races = parseRaces(json.optJSONArray("races")),
@@ -836,6 +972,22 @@ class RegattaApiClient(
                         value = item.optDouble("value").takeIf { !it.isNaN() },
                         reason = item.optString("reason"),
                         createdAt = item.optString("created_at")
+                    )
+                )
+            }
+        }
+    }
+
+    private fun parseNoticePosts(array: JSONArray?): List<RegattaNoticePost> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                add(
+                    RegattaNoticePost(
+                        id = item.optString("id"),
+                        noticeText = item.optString("notice_text"),
+                        publishedAt = item.optString("published_at").takeIf { it.isNotBlank() }
                     )
                 )
             }

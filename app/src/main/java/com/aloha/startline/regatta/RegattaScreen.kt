@@ -13,6 +13,7 @@ import android.view.MotionEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -75,6 +77,8 @@ import java.util.Locale
 import java.util.UUID
 import java.util.Calendar
 
+private const val NOTICE_TIMESTAMP_PATTERN = "dd.MM.yyyy HH:mm"
+
 @Composable
 fun RegattaScreen(
     apiClient: RegattaApiClient,
@@ -91,6 +95,8 @@ fun RegattaScreen(
     var eventName by rememberSaveable { mutableStateOf("") }
     var joinCode by rememberSaveable { mutableStateOf(prefs.lastJoinCode) }
     var organizerCode by rememberSaveable { mutableStateOf(prefs.lastOrganizerAccessValue) }
+    var organizerLoginJoinCode by rememberSaveable { mutableStateOf(prefs.lastJoinCode) }
+    var organizerLoginHash by rememberSaveable { mutableStateOf(prefs.lastOrganizerAccessValue) }
     var regattaStartDate by rememberSaveable { mutableStateOf("") }
     var regattaEndDate by rememberSaveable { mutableStateOf("") }
     var regattaRaceEndTime by rememberSaveable { mutableStateOf("18:00") }
@@ -141,8 +147,10 @@ fun RegattaScreen(
     var organizerGateSelection by rememberSaveable { mutableStateOf("start") }
     var organizerSelectedMapPoint by remember { mutableStateOf<RegattaPoint?>(null) }
     var organizerGateMenuExpanded by remember { mutableStateOf(false) }
-    var nextRaceName by rememberSaveable { mutableStateOf("") }
-    var countdownMinutes by rememberSaveable { mutableStateOf("5") }
+    var scoringTargetGateMenuExpanded by remember { mutableStateOf(false) }
+    var organizerManualBoatMenuExpanded by remember { mutableStateOf(false) }
+    var organizerManualBoatId by rememberSaveable { mutableStateOf("") }
+    var organizerCrossingMenuId by remember { mutableStateOf<String?>(null) }
     var startTimeInput by rememberSaveable { mutableStateOf("") }
     var scoringTargetGateId by rememberSaveable { mutableStateOf("") }
     var startA by remember { mutableStateOf<RegattaPoint?>(null) }
@@ -154,9 +162,9 @@ fun RegattaScreen(
     var pendingHelperB by remember { mutableStateOf<RegattaPoint?>(null) }
     var helperGates by remember { mutableStateOf<List<PendingGateDraft>>(emptyList()) }
     val groupInputs = remember { mutableStateMapOf<String, String>() }
-    val penaltyTypeInputs = remember { mutableStateMapOf<String, String>() }
     val penaltyValueInputs = remember { mutableStateMapOf<String, String>() }
     val penaltyReasonInputs = remember { mutableStateMapOf<String, String>() }
+    val crossingStatusInputs = remember { mutableStateMapOf<String, String>() }
     val background = Color.Black
     val cardColor = Color(0xFF111111)
     val actionGreen = Color(0xFF2E7D32)
@@ -173,15 +181,93 @@ fun RegattaScreen(
         mode = "new"
     }
 
+    fun refreshPublicHistory(openHistoryMode: Boolean) {
+        publicHistoryLoading = true
+        errorMessage = null
+        statusMessage = null
+        scope.launch {
+            when (val result = withContext(Dispatchers.IO) { apiClient.listPublicEvents() }) {
+                is NasCallResult.Ok -> {
+                    publicHistory = result.value.sortedWith(
+                        compareByDescending<PublicRegattaEventSummary> { it.startDate.orEmpty() }
+                            .thenByDescending { it.updatedAt }
+                    )
+                    historySelectedEvent = null
+                    historySelectedRace = null
+                    historySelectedRaceLive = null
+                    historyRegattaRaceSnapshots = emptyList()
+                    historySelectedBoatResult = null
+                    if (openHistoryMode) {
+                        mode = "history"
+                    }
+                }
+                is NasCallResult.Err -> errorMessage = result.message
+            }
+            publicHistoryLoading = false
+        }
+    }
+
     fun snapshotPoint(): RegattaPoint? {
         val location = currentLocation ?: return null
         return RegattaPoint(location.latitude, location.longitude)
     }
 
+    fun organizerScoringSelectionForRace(race: RegattaRaceSummary?): String {
+        if (race == null) return "finish"
+        val finishGateId = race.gates
+            .firstOrNull { it.type.equals("finish", ignoreCase = true) }
+            ?.id
+        val selected = race.scoringTargetGateId?.trim().orEmpty()
+        if (selected.isBlank()) return "finish"
+        if (finishGateId != null && selected == finishGateId) return "finish"
+        return if (race.gates.any { it.id == selected && it.type.equals("gate", ignoreCase = true) }) {
+            selected
+        } else {
+            "finish"
+        }
+    }
+
+    fun resolveOrganizerScoringGateId(
+        selectedScoringGate: String,
+        helperGatesBeforeSave: List<PendingGateDraft>,
+        refreshedRace: RegattaRaceSummary?,
+        previousFinishGateId: String?
+    ): String? {
+        if (refreshedRace == null) return null
+        val finishGate = refreshedRace.gates.firstOrNull { it.type.equals("finish", ignoreCase = true) }
+        val helperRaceGates = refreshedRace.gates
+            .filter { it.type.equals("gate", ignoreCase = true) }
+            .sortedBy { it.order }
+        val selection = selectedScoringGate.trim()
+        if (selection.isBlank()) return finishGate?.id ?: helperRaceGates.firstOrNull()?.id
+        if (selection == "finish") return finishGate?.id
+        if (previousFinishGateId != null && selection == previousFinishGateId) return finishGate?.id
+        if (refreshedRace.gates.any { it.id == selection && !it.type.equals("start", ignoreCase = true) }) {
+            return selection
+        }
+        val helperIndex = helperGatesBeforeSave.indexOfFirst { it.id == selection }
+        if (helperIndex >= 0) {
+            return helperRaceGates.getOrNull(helperIndex)?.id
+        }
+        return finishGate?.id ?: helperRaceGates.firstOrNull()?.id
+    }
+
+    fun computeAutoRaceStateLabel(race: RegattaRaceSummary, nowEpochMs: Long = System.currentTimeMillis()): String {
+        val startEpoch = race.countdownTargetEpochMs ?: return "prepared"
+        val activeStartEpoch = startEpoch - 30L * 60L * 1_000L
+        if (nowEpochMs < activeStartEpoch) return "prepared"
+        val raceDate = race.raceDate ?: SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(startEpoch))
+        val endTime = race.endTime ?: return "active"
+        val endEpoch = runCatching {
+            val format = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { isLenient = false }
+            format.parse("$raceDate $endTime")?.time
+        }.getOrNull() ?: return "active"
+        val activeUntilEpoch = endEpoch + 15L * 60L * 1_000L
+        return if (nowEpochMs <= activeUntilEpoch) "active" else "finished"
+    }
+
     var organizerToken by rememberSaveable { mutableStateOf(prefs.organizerToken) }
     var organizerEventIds by remember { mutableStateOf(prefs.organizerEventIds) }
-    var organizerEvents by remember { mutableStateOf<List<RegattaEventSnapshot>>(emptyList()) }
-    var organizerEventsLoading by remember { mutableStateOf(false) }
     val isOrganizer = organizerToken.isNotBlank()
 
     LaunchedEffect(joinedEventId, joinedBoatId, organizerToken) {
@@ -191,6 +277,16 @@ fun RegattaScreen(
     }
     LaunchedEffect(joinedEventId, joinedBoatId) {
         onJoinModeChanged(joinedEventId.isNotBlank() && joinedBoatId.isNotBlank())
+    }
+    LaunchedEffect(mode, organizerToken, joinedEventId, joinedBoatId) {
+        if (
+            mode == "home" &&
+            organizerToken.isNotBlank() &&
+            joinedEventId.isNotBlank() &&
+            joinedBoatId.isBlank()
+        ) {
+            mode = "organizer"
+        }
     }
 
     LaunchedEffect(joinedEventId, joinedRaceId) {
@@ -223,9 +319,6 @@ fun RegattaScreen(
             if (!groupInputs.containsKey(participant.boatId)) {
                 groupInputs[participant.boatId] = participant.groupCode.orEmpty()
             }
-            if (!penaltyTypeInputs.containsKey(participant.boatId)) {
-                penaltyTypeInputs[participant.boatId] = "percent"
-            }
             if (!penaltyValueInputs.containsKey(participant.boatId)) {
                 penaltyValueInputs[participant.boatId] = "0"
             }
@@ -233,27 +326,15 @@ fun RegattaScreen(
                 penaltyReasonInputs[participant.boatId] = ""
             }
         }
-    }
-    LaunchedEffect(mode, organizerEventIds) {
-        if (mode != "organizer") return@LaunchedEffect
-        if (organizerEventIds.isEmpty()) {
-            organizerEvents = emptyList()
-            organizerEventsLoading = false
-            return@LaunchedEffect
-        }
-        organizerEventsLoading = true
-        val snapshots = withContext(Dispatchers.IO) {
-            organizerEventIds.mapNotNull { eventId ->
-                when (val result = apiClient.getEventSnapshot(eventId)) {
-                    is NasCallResult.Ok -> result.value
-                    is NasCallResult.Err -> null
-                }
+        liveSnapshot?.crossings?.forEach { crossing ->
+            if (!crossingStatusInputs.containsKey(crossing.id)) {
+                crossingStatusInputs[crossing.id] = crossing.status
             }
         }
-        organizerEvents = snapshots.sortedBy { it.name.lowercase(Locale.US) }
-        organizerEventsLoading = false
+        if (organizerManualBoatId.isBlank()) {
+            organizerManualBoatId = liveSnapshot?.participants?.firstOrNull()?.boatId.orEmpty()
+        }
     }
-
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = background
@@ -309,7 +390,11 @@ fun RegattaScreen(
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = quickAccessInput,
-                        onValueChange = { quickAccessInput = it.uppercase(Locale.US) },
+                        onValueChange = {
+                            val normalized = it.uppercase(Locale.US)
+                            quickAccessInput = normalized
+                            prefs.saveLastOrganizerAccessValue(normalized)
+                        },
                         label = {
                             Text(
                                 if (quickAccessMode == "join") {
@@ -361,12 +446,19 @@ fun RegattaScreen(
                                         }
                                         prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
                                         statusMessage = "Organizer access restored from saved token."
-                                        mode = "dashboard"
+                                        mode = "organizer"
                                     } else {
                                         val normalizedJoinCode = input.uppercase(Locale.US)
-                                        when (withContext(Dispatchers.IO) { apiClient.getEventByJoinCode(normalizedJoinCode) }) {
+                                        when (val lookupResult = withContext(Dispatchers.IO) {
+                                            apiClient.getEventByJoinCode(normalizedJoinCode)
+                                        }) {
                                             is NasCallResult.Ok -> {
+                                                joinedEventId = lookupResult.value.eventId
+                                                joinedRaceId = ""
+                                                joinedBoatId = ""
+                                                prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
                                                 joinCode = normalizedJoinCode
+                                                organizerLoginJoinCode = normalizedJoinCode
                                                 mode = "organizer"
                                                 statusMessage = "Regata pronađena. Unesi organizer kod."
                                             }
@@ -396,29 +488,7 @@ fun RegattaScreen(
                 }
                 Spacer(Modifier.height(8.dp))
                 Button(
-                    onClick = {
-                        publicHistoryLoading = true
-                        errorMessage = null
-                        statusMessage = null
-                        scope.launch {
-                            when (val result = withContext(Dispatchers.IO) { apiClient.listPublicEvents() }) {
-                                is NasCallResult.Ok -> {
-                                    publicHistory = result.value.sortedWith(
-                                        compareByDescending<PublicRegattaEventSummary> { it.startDate.orEmpty() }
-                                            .thenByDescending { it.updatedAt }
-                                    )
-                                    historySelectedEvent = null
-                                    historySelectedRace = null
-                                    historySelectedRaceLive = null
-                                    historyRegattaRaceSnapshots = emptyList()
-                                    historySelectedBoatResult = null
-                                    mode = "history"
-                                }
-                                is NasCallResult.Err -> errorMessage = result.message
-                            }
-                            publicHistoryLoading = false
-                        }
-                    },
+                    onClick = { refreshPublicHistory(openHistoryMode = true) },
                     enabled = !publicHistoryLoading,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
                 ) {
@@ -428,6 +498,21 @@ fun RegattaScreen(
 
             if (mode == "history") {
                 RegattaSection(title = "Public Regatta History", cardColor = cardColor) {
+                    Button(
+                        onClick = { mode = "home" },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                    ) {
+                        Text("Back to home")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { refreshPublicHistory(openHistoryMode = false) },
+                        enabled = !publicHistoryLoading,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                    ) {
+                        Text(if (publicHistoryLoading) "Refreshing..." else "Refresh list")
+                    }
+                    Spacer(Modifier.height(8.dp))
                     if (publicHistory.isEmpty()) {
                         Text("Nema public regata.", color = muted)
                     } else {
@@ -594,6 +679,13 @@ fun RegattaScreen(
                         Text("Results nisu dostupni.", color = muted)
                     } else {
                         val raceRows = computeRaceScoreRows(raceLive, selectedEvent.boats)
+                        val (gateTimelineHeaders, gateTimelineRows) = computeRaceGateTimelineRows(
+                            live = raceLive,
+                            boats = selectedEvent.boats
+                        )
+                        val gateTimelineRowsByGroup = gateTimelineRows
+                            .groupBy { normalizeGroupLabel(it.groupCode) }
+                            .toSortedMap()
                         val raceRowsByGroup = raceRows
                             .groupBy { normalizeGroupLabel(it.groupCode) }
                             .toSortedMap()
@@ -629,6 +721,66 @@ fun RegattaScreen(
                             colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
                         ) { Text("Map") }
                         Spacer(Modifier.height(10.dp))
+                        Text("Prolazi kroz gateove", color = Color.White, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        if (gateTimelineHeaders.isEmpty()) {
+                            Text("Nema definiranih gateova za prolaze.", color = muted)
+                        } else if (gateTimelineRows.isEmpty()) {
+                            Text("Nema brodova za prikaz prolaza.", color = muted)
+                        } else {
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .horizontalScroll(rememberScrollState())
+                                        .background(Color(0xFF263238))
+                                        .padding(8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text("Brod", color = Color.White, fontSize = 11.sp, modifier = Modifier.width(130.dp))
+                                    Text("Grupa", color = Color.White, fontSize = 11.sp, modifier = Modifier.width(80.dp))
+                                    gateTimelineHeaders.forEach { gateHeader ->
+                                        Text(gateHeader, color = Color.White, fontSize = 11.sp, modifier = Modifier.width(84.dp))
+                                    }
+                                    Text("Korig.", color = Color.White, fontSize = 11.sp, modifier = Modifier.width(90.dp))
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            gateTimelineRowsByGroup.forEach { (groupName, rowsInGroup) ->
+                                Text("Grupa: $groupName", color = Color(0xFFFFF59D), fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(4.dp))
+                                rowsInGroup.forEach { row ->
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .horizontalScroll(rememberScrollState())
+                                                .background(Color(0xFF171717))
+                                                .padding(10.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(row.boatName, color = Color.White, fontSize = 11.sp, modifier = Modifier.width(130.dp))
+                                            Text(groupName, color = Color.White, fontSize = 11.sp, modifier = Modifier.width(80.dp))
+                                            row.gateTimes.forEach { crossingEpoch ->
+                                                Text(
+                                                    crossingEpoch?.let(::formatEpochTime) ?: "--",
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    modifier = Modifier.width(84.dp)
+                                                )
+                                            }
+                                            Text(
+                                                row.correctedElapsedMs?.let(::formatDurationFromMillis) ?: "--",
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                modifier = Modifier.width(90.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
                         Text("Tablica plova", color = Color.White, fontWeight = FontWeight.Bold)
                         Card(modifier = Modifier.fillMaxWidth()) {
                             Row(
@@ -682,9 +834,19 @@ fun RegattaScreen(
                                             ) {
                                                 Text(row.boatName, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(2f))
                                                 Text(groupName, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                                Text(row.realElapsedMs?.let(::formatDurationFromMillis) ?: "--", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                                Text(
+                                                    if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.realElapsedMs?.let(::formatDurationFromMillis) ?: "--",
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    modifier = Modifier.weight(1f)
+                                                )
                                                 Text(String.format(Locale.US, "%.1f%%", row.penaltyPercent), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                                Text(row.correctedElapsedMs?.let(::formatDurationFromMillis) ?: "--", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                                Text(
+                                                    if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.correctedElapsedMs?.let(::formatDurationFromMillis) ?: "--",
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    modifier = Modifier.weight(1f)
+                                                )
                                                 Text(String.format(Locale.US, "%.2f", row.racePoints), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
                                                 Text((groupIndex + 1).toString(), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(0.7f))
                                             }
@@ -789,9 +951,13 @@ fun RegattaScreen(
                         Text("Group: ${row.groupCode.ifBlank { "--" }}", color = Color.White, fontSize = 13.sp)
                         Text("Status: ${row.status}", color = Color.White, fontSize = 13.sp)
                         Text("Completed gates: ${row.completedGates}", color = Color.White, fontSize = 13.sp)
-                        Text("Real time: ${row.realElapsedMs?.let(::formatDurationFromMillis) ?: "--"}", color = Color.White, fontSize = 13.sp)
                         Text(
-                            "Corrected time: ${row.correctedElapsedMs?.let(::formatDurationFromMillis) ?: "--"}",
+                            "Real time: ${if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.realElapsedMs?.let(::formatDurationFromMillis) ?: "--"}",
+                            color = Color.White,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            "Corrected time: ${if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.correctedElapsedMs?.let(::formatDurationFromMillis) ?: "--"}",
                             color = Color.White,
                             fontSize = 13.sp
                         )
@@ -882,6 +1048,21 @@ fun RegattaScreen(
 
             if (mode == "new") {
                 RegattaSection(title = "Create Event", cardColor = cardColor) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { mode = "organizer" },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                        ) {
+                            Text("Cancel create")
+                        }
+                        Button(
+                            onClick = { mode = "home" },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF616161))
+                        ) {
+                            Text("Back to home")
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = organizerName,
                         onValueChange = { organizerName = it },
@@ -999,14 +1180,19 @@ fun RegattaScreen(
                                         joinedEventId = result.value.eventId
                                         joinedRaceId = result.value.raceId.orEmpty()
                                         joinedBoatId = ""
-                                        nextRaceName = "Race 2"
                                         organizerToken = result.value.organizerToken.orEmpty()
+                                        val organizerAccessValue = result.value.organizerCode.orEmpty()
+                                        if (organizerAccessValue.isNotBlank()) {
+                                            quickAccessInput = organizerAccessValue
+                                            organizerCode = organizerAccessValue
+                                            prefs.saveLastOrganizerAccessValue(organizerAccessValue)
+                                        }
                                         prefs.saveOrganizerSession(joinedEventId, organizerToken)
                                         organizerEventIds = prefs.organizerEventIds
                                         revealOrganizerCode = result.value.organizerCode.orEmpty()
                                         prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
                                         statusMessage = "Event created. Day 1 / Race 1 is ready."
-                                        mode = "dashboard"
+                                        mode = "organizer"
                                     }
                                     is NasCallResult.Err -> errorMessage = result.message
                                 }
@@ -1045,20 +1231,35 @@ fun RegattaScreen(
                 RegattaSection(title = "Organizer", cardColor = cardColor) {
                     val hasActiveOrganizerRegatta = organizerToken.isNotBlank() && joinedEventId.isNotBlank()
                     if (!hasActiveOrganizerRegatta) {
-                        Text("Unesi hash regate pa Organizer login otvara regatu.", color = muted)
+                        Text("Unesi Join code i Organizer hash pa klikni Organizer login.", color = muted)
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
-                            value = quickAccessInput,
-                            onValueChange = { quickAccessInput = it.uppercase(Locale.US) },
-                            label = { Text("Join code / hash regate") },
+                            value = organizerLoginJoinCode,
+                            onValueChange = {
+                                val normalized = it.uppercase(Locale.US)
+                                organizerLoginJoinCode = normalized
+                            },
+                            label = { Text("Join code") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = organizerLoginHash,
+                            onValueChange = {
+                                val normalized = it.uppercase(Locale.US)
+                                organizerLoginHash = normalized
+                                prefs.saveLastOrganizerAccessValue(normalized)
+                            },
+                            label = { Text("Organizer hash") },
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(8.dp))
                         Button(
                             enabled = !isBusy,
                             onClick = {
-                                val input = quickAccessInput.trim().uppercase(Locale.US)
-                                if (input.isBlank()) {
+                                val joinInput = organizerLoginJoinCode.trim().uppercase(Locale.US)
+                                val organizerHashInput = organizerLoginHash.trim().uppercase(Locale.US)
+                                if (joinInput.isBlank() || organizerHashInput.isBlank()) {
                                     organizerLoginAskedCreateNew = true
                                     return@Button
                                 }
@@ -1067,22 +1268,23 @@ fun RegattaScreen(
                                 statusMessage = null
                                 scope.launch {
                                     when (val lookupResult = withContext(Dispatchers.IO) {
-                                        apiClient.getEventByJoinCode(input)
+                                        apiClient.getEventByJoinCode(joinInput)
                                     }) {
                                         is NasCallResult.Ok -> {
-                                            joinCode = input
+                                            joinCode = joinInput
                                             mode = "organizer"
                                             when (val authResult = withContext(Dispatchers.IO) {
                                                 apiClient.authenticateOrganizer(
-                                                    joinCode = input,
-                                                    organizerCode = input
+                                                    joinCode = joinInput,
+                                                    organizerCode = organizerHashInput
                                                 )
                                             }) {
                                                 is NasCallResult.Ok -> {
                                                     joinedEventId = authResult.value.eventId
                                                     organizerToken = authResult.value.organizerToken
-                                                    organizerCode = input
-                                                    prefs.saveLastOrganizerAccessValue(input)
+                                                    organizerCode = organizerHashInput
+                                                    quickAccessInput = organizerHashInput
+                                                    prefs.saveLastOrganizerAccessValue(organizerHashInput)
                                                     prefs.saveOrganizerSession(joinedEventId, organizerToken)
                                                     organizerEventIds = prefs.organizerEventIds
                                                     when (val snapshotResult = withContext(Dispatchers.IO) {
@@ -1093,6 +1295,7 @@ fun RegattaScreen(
                                                             eventName = snapshotResult.value.name
                                                             organizerName = snapshotResult.value.organizerName
                                                             joinCode = snapshotResult.value.joinCode
+                                                            organizerLoginJoinCode = snapshotResult.value.joinCode
                                                             regattaStartDate = snapshotResult.value.startDate.orEmpty()
                                                             regattaEndDate = snapshotResult.value.endDate.orEmpty()
                                                             regattaRaceEndTime = snapshotResult.value.raceEndTime.orEmpty()
@@ -1110,6 +1313,9 @@ fun RegattaScreen(
                                                             organizerRaceLengthNmInput = activeRace?.raceLengthNm
                                                                 ?.takeIf { it > 0.0 }
                                                                 ?.let { String.format(Locale.US, "%.2f", it) }
+                                                                .orEmpty()
+                                                            startTimeInput = activeRace?.countdownTargetEpochMs
+                                                                ?.let(::formatEpochInput)
                                                                 .orEmpty()
                                                             organizerGateSelection = "start"
                                                             statusMessage = "Organizer regata otvorena."
@@ -1134,6 +1340,45 @@ fun RegattaScreen(
                     } else {
                         val event = eventSnapshot
                         Text("Organizer / Regata", color = Color.White, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            enabled = !isBusy && joinedEventId.isNotBlank(),
+                            onClick = {
+                                isBusy = true
+                                errorMessage = null
+                                statusMessage = null
+                                scope.launch {
+                                    when (val snapshotResult = withContext(Dispatchers.IO) {
+                                        apiClient.getEventSnapshot(joinedEventId)
+                                    }) {
+                                        is NasCallResult.Ok -> {
+                                            eventSnapshot = snapshotResult.value
+                                            if (joinedRaceId.isBlank()) {
+                                                joinedRaceId = snapshotResult.value.activeRaceId.orEmpty()
+                                                prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
+                                            }
+                                            if (joinedRaceId.isNotBlank()) {
+                                                when (val liveResult = withContext(Dispatchers.IO) {
+                                                    apiClient.getLiveSnapshot(joinedRaceId)
+                                                }) {
+                                                    is NasCallResult.Ok -> liveSnapshot = liveResult.value
+                                                    is NasCallResult.Err -> {
+                                                        liveSnapshot = null
+                                                        errorMessage = liveResult.message
+                                                    }
+                                                }
+                                            } else {
+                                                liveSnapshot = null
+                                            }
+                                            statusMessage = "Organizer podaci osvježeni."
+                                        }
+                                        is NasCallResult.Err -> errorMessage = snapshotResult.message
+                                    }
+                                    isBusy = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                        ) { Text(if (isBusy) "Refreshing..." else "Refresh organizer") }
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
                             value = eventName,
@@ -1252,6 +1497,262 @@ fun RegattaScreen(
                         ) {
                             Text(if (isBusy) "Saving..." else "Spremi regatu")
                         }
+                        Spacer(Modifier.height(10.dp))
+                        Text("Notice board", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = noticeBoardInput,
+                            onValueChange = { noticeBoardInput = it },
+                            label = { Text("Nova notice poruka") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            enabled = !isBusy && noticeBoardInput.isNotBlank(),
+                            onClick = {
+                                val message = noticeBoardInput.trim()
+                                if (message.isBlank()) return@Button
+                                isBusy = true
+                                errorMessage = null
+                                statusMessage = null
+                                scope.launch {
+                                    when (val noticeResult = withContext(Dispatchers.IO) {
+                                        apiClient.updateNoticeBoard(
+                                            eventId = joinedEventId,
+                                            organizerToken = organizerToken,
+                                            noticeText = message
+                                        )
+                                    }) {
+                                        is NasCallResult.Ok -> {
+                                            noticeBoardInput = ""
+                                            when (val snapshotResult = withContext(Dispatchers.IO) {
+                                                apiClient.getEventSnapshot(joinedEventId)
+                                            }) {
+                                                is NasCallResult.Ok -> {
+                                                    eventSnapshot = snapshotResult.value
+                                                    statusMessage = "Notice objavljen."
+                                                }
+                                                is NasCallResult.Err -> errorMessage = snapshotResult.message
+                                            }
+                                        }
+                                        is NasCallResult.Err -> errorMessage = noticeResult.message
+                                    }
+                                    isBusy = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
+                        ) { Text(if (isBusy) "Saving..." else "Objavi notice") }
+                        Spacer(Modifier.height(8.dp))
+                        val organizerNoticePosts = event?.noticePosts.orEmpty()
+                        if (organizerNoticePosts.isEmpty()) {
+                            Text("Nema objavljenih notice poruka.", color = muted, fontSize = 12.sp)
+                        } else {
+                            Text("Objave (${organizerNoticePosts.size})", color = Color(0xFFCFD8DC), fontSize = 12.sp)
+                            Spacer(Modifier.height(6.dp))
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(160.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                organizerNoticePosts.forEach { post ->
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(Color(0xFF171717))
+                                                .padding(8.dp)
+                                        ) {
+                                            Text(
+                                                post.noticeText.ifBlank { "--" },
+                                                color = Color.White,
+                                                fontSize = 12.sp
+                                            )
+                                            Text(
+                                                formatIsoDateTime(post.publishedAt),
+                                                color = Color(0xFFB0BEC5),
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Text("Race/plov selektor", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(6.dp))
+                        if (event == null || event.races.isEmpty()) {
+                            Text("Nema race/plovova.", color = muted)
+                        } else {
+                            val nextRaceNumber = (event.races.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
+                            Button(
+                                enabled = !isBusy,
+                                onClick = {
+                                    isBusy = true
+                                    errorMessage = null
+                                    statusMessage = null
+                                    scope.launch {
+                                        val raceName = "Race/plov $nextRaceNumber"
+                                        when (val createResult = withContext(Dispatchers.IO) {
+                                            apiClient.createRace(
+                                                eventId = joinedEventId,
+                                                organizerToken = organizerToken,
+                                                name = raceName
+                                            )
+                                        }) {
+                                            is NasCallResult.Ok -> {
+                                                val newRaceId = createResult.value
+                                                joinedRaceId = newRaceId
+                                                prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
+                                                organizerRaceDateInput = ""
+                                                organizerRaceStartTimeInput = "10:00"
+                                                organizerRaceEndTimeInput = "16:00"
+                                                organizerRaceLengthNmInput = ""
+                                                startTimeInput = ""
+                                                startA = null
+                                                startB = null
+                                                finishA = null
+                                                finishB = null
+                                                helperGates = emptyList()
+                                                organizerGateSelection = "start"
+                                                when (val snapshotResult = withContext(Dispatchers.IO) {
+                                                    apiClient.getEventSnapshot(joinedEventId)
+                                                }) {
+                                                    is NasCallResult.Ok -> {
+                                                        eventSnapshot = snapshotResult.value
+                                                        statusMessage = "Kreiran i odabran $raceName."
+                                                    }
+                                                    is NasCallResult.Err -> errorMessage = snapshotResult.message
+                                                }
+                                            }
+                                            is NasCallResult.Err -> errorMessage = createResult.message
+                                        }
+                                        isBusy = false
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
+                            ) {
+                                Text(if (isBusy) "Working..." else "Novi race/plov")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            event.races
+                                .sortedBy { it.sequenceNumber }
+                                .forEach { race ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable(enabled = !isBusy) {
+                                                joinedRaceId = race.id
+                                                prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
+                                                organizerRaceDateInput = race.raceDate.orEmpty()
+                                                organizerRaceStartTimeInput = race.startTime ?: "10:00"
+                                                organizerRaceEndTimeInput = race.endTime ?: "16:00"
+                                                organizerRaceLengthNmInput = race.raceLengthNm
+                                                    .takeIf { it > 0.0 }
+                                                    ?.let { String.format(Locale.US, "%.2f", it) }
+                                                    .orEmpty()
+                                                startA = race.gates.firstOrNull { it.type == "start" }?.pointA
+                                                startB = race.gates.firstOrNull { it.type == "start" }?.pointB
+                                                finishA = race.gates.firstOrNull { it.type == "finish" }?.pointA
+                                                finishB = race.gates.firstOrNull { it.type == "finish" }?.pointB
+                                                helperGates = race.gates
+                                                    .filter { it.type == "gate" }
+                                                    .map {
+                                                        PendingGateDraft(
+                                                            id = it.id.ifBlank { UUID.randomUUID().toString() },
+                                                            name = it.name,
+                                                            pointA = it.pointA,
+                                                            pointB = it.pointB
+                                                        )
+                                                    }
+                                                startTimeInput = race.countdownTargetEpochMs
+                                                    ?.let(::formatEpochInput)
+                                                    .orEmpty()
+                                                scoringTargetGateId = organizerScoringSelectionForRace(race)
+                                                organizerGateSelection = "start"
+                                                statusMessage = "Odabran race/plov ${race.sequenceNumber}."
+                                            }
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(Color(0xFF171717))
+                                                .padding(10.dp)
+                                        ) {
+                                            val isSelectedRace = race.id == joinedRaceId
+                                            Text(
+                                                race.name.ifBlank { "Race/plov ${race.sequenceNumber}" },
+                                                color = if (isSelectedRace) Color(0xFFFFF59D) else Color.White,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                "Start: ${race.countdownTargetEpochMs?.let(::formatEpoch) ?: "--"}",
+                                                color = Color(0xFFCFD8DC),
+                                                fontSize = 12.sp
+                                            )
+                                            Text(
+                                                "State: ${computeAutoRaceStateLabel(race)}",
+                                                color = Color(0xFFCFD8DC),
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                            Spacer(Modifier.height(6.dp))
+                            Button(
+                                enabled = !isBusy && joinedRaceId.isNotBlank(),
+                                onClick = {
+                                    val selectedRace = event.races.firstOrNull { it.id == joinedRaceId } ?: return@Button
+                                    isBusy = true
+                                    historyDetailsLoading = true
+                                    errorMessage = null
+                                    statusMessage = null
+                                    scope.launch {
+                                        when (val liveResult = withContext(Dispatchers.IO) {
+                                            apiClient.getLiveSnapshot(selectedRace.id)
+                                        }) {
+                                            is NasCallResult.Ok -> {
+                                                val raceIdsUpToSelected = event.races
+                                                    .takeWhile { it.id != selectedRace.id }
+                                                    .map { it.id } + selectedRace.id
+                                                val snapshotsForRegattaTable = mutableListOf<RegattaLiveSnapshot>()
+                                                var loadingFailed = false
+                                                raceIdsUpToSelected.forEach { raceId ->
+                                                    when (val snapshotResult = withContext(Dispatchers.IO) {
+                                                        apiClient.getLiveSnapshot(raceId)
+                                                    }) {
+                                                        is NasCallResult.Ok -> snapshotsForRegattaTable += snapshotResult.value
+                                                        is NasCallResult.Err -> {
+                                                            errorMessage = snapshotResult.message
+                                                            loadingFailed = true
+                                                            return@forEach
+                                                        }
+                                                    }
+                                                }
+                                                if (!loadingFailed) {
+                                                    historySelectedEvent = event
+                                                    historySelectedRace = selectedRace
+                                                    historySelectedRaceLive = liveResult.value
+                                                    historyRegattaRaceSnapshots = snapshotsForRegattaTable
+                                                    historySelectedBoatResult = null
+                                                    historyMapSelectedBoatId = ""
+                                                    historyMapBoatTrack = emptyList()
+                                                    mode = "history_race"
+                                                }
+                                            }
+                                            is NasCallResult.Err -> errorMessage = liveResult.message
+                                        }
+                                        isBusy = false
+                                        historyDetailsLoading = false
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
+                            ) {
+                                Text(if (isBusy || historyDetailsLoading) "Loading..." else "Otvori rezultate odabranog racea")
+                            }
+                        }
                         Spacer(Modifier.height(12.dp))
                         Text("Karakteristike race/plova", color = Color.White, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
@@ -1347,6 +1848,22 @@ fun RegattaScreen(
                             ) { Text("Vrijeme kraj") }
                         }
                         Spacer(Modifier.height(8.dp))
+                        val selectedRaceForStatus = event?.races?.firstOrNull { it.id == joinedRaceId }
+                        if (selectedRaceForStatus != null) {
+                            Text("Status race/plova", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Auto state: ${computeAutoRaceStateLabel(selectedRaceForStatus)}",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                "prepared = prije T-30, active = T-30 do kraj+15 min, finished = nakon toga",
+                                color = muted,
+                                fontSize = 11.sp
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
                         Button(
                             enabled = !isBusy && joinedRaceId.isNotBlank(),
                             onClick = {
@@ -1379,6 +1896,121 @@ fun RegattaScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
                         ) { Text(if (isBusy) "Saving..." else "Spremi race karakteristike") }
+                        Spacer(Modifier.height(10.dp))
+                        Text("Countdown start", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = startTimeInput,
+                            onValueChange = { startTimeInput = it },
+                            label = { Text("Start (yyyy-MM-dd HH:mm:ss)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        val selectedRaceForCountdown = event?.races?.firstOrNull { it.id == joinedRaceId }
+                        val existingCountdown = selectedRaceForCountdown?.countdownTargetEpochMs
+                        Text(
+                            text = "Trenutni start: ${existingCountdown?.let(::formatEpoch) ?: "--"}",
+                            color = Color(0xFFCFD8DC),
+                            fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    val base = parseEpochInput(startTimeInput) ?: System.currentTimeMillis()
+                                    val cal = Calendar.getInstance().apply { timeInMillis = base }
+                                    DatePickerDialog(
+                                        context,
+                                        { _, year, month, dayOfMonth ->
+                                            cal.set(Calendar.YEAR, year)
+                                            cal.set(Calendar.MONTH, month)
+                                            cal.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+                                            startTimeInput = formatEpochInput(cal.timeInMillis)
+                                        },
+                                        cal.get(Calendar.YEAR),
+                                        cal.get(Calendar.MONTH),
+                                        cal.get(Calendar.DAY_OF_MONTH)
+                                    ).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242)),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Datum") }
+                            Button(
+                                onClick = {
+                                    val base = parseEpochInput(startTimeInput) ?: System.currentTimeMillis()
+                                    val cal = Calendar.getInstance().apply { timeInMillis = base }
+                                    TimePickerDialog(
+                                        context,
+                                        { _, hour, minute ->
+                                            cal.set(Calendar.HOUR_OF_DAY, hour)
+                                            cal.set(Calendar.MINUTE, minute)
+                                            cal.set(Calendar.SECOND, 0)
+                                            startTimeInput = formatEpochInput(cal.timeInMillis)
+                                        },
+                                        cal.get(Calendar.HOUR_OF_DAY),
+                                        cal.get(Calendar.MINUTE),
+                                        true
+                                    ).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242)),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Vrijeme") }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    startTimeInput = formatEpochInput(System.currentTimeMillis() + 5L * 60L * 1_000L)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                            ) { Text("Sada +5 min") }
+                            Button(
+                                enabled = !isBusy && joinedRaceId.isNotBlank(),
+                                onClick = {
+                                    val raceId = joinedRaceId.trim()
+                                    if (raceId.isBlank()) {
+                                        errorMessage = "Race nije odabran."
+                                        return@Button
+                                    }
+                                    val targetEpoch = parseEpochInput(startTimeInput)
+                                    if (targetEpoch == null) {
+                                        errorMessage = "Neispravan format vremena starta."
+                                        return@Button
+                                    }
+                                    isBusy = true
+                                    errorMessage = null
+                                    statusMessage = null
+                                    scope.launch {
+                                        when (val countdownResult = withContext(Dispatchers.IO) {
+                                            apiClient.updateCountdown(
+                                                raceId = raceId,
+                                                organizerToken = organizerToken,
+                                                countdownTargetEpochMs = targetEpoch
+                                            )
+                                        }) {
+                                            is NasCallResult.Ok -> {
+                                                when (val snapshotResult = withContext(Dispatchers.IO) {
+                                                    apiClient.getEventSnapshot(joinedEventId)
+                                                }) {
+                                                    is NasCallResult.Ok -> {
+                                                        eventSnapshot = snapshotResult.value
+                                                        val refreshedRace = snapshotResult.value.races
+                                                            .firstOrNull { it.id == raceId }
+                                                        startTimeInput = refreshedRace?.countdownTargetEpochMs
+                                                            ?.let(::formatEpochInput)
+                                                            .orEmpty()
+                                                        statusMessage = "Countdown start spremljen."
+                                                    }
+                                                    is NasCallResult.Err -> errorMessage = snapshotResult.message
+                                                }
+                                            }
+                                            is NasCallResult.Err -> errorMessage = countdownResult.message
+                                        }
+                                        isBusy = false
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
+                            ) { Text(if (isBusy) "Saving..." else "Spremi countdown") }
+                        }
                         Spacer(Modifier.height(10.dp))
                         Box {
                             OutlinedTextField(
@@ -1520,6 +2152,56 @@ fun RegattaScreen(
                             ) { Text("x Gate") }
                         }
                         Spacer(Modifier.height(8.dp))
+                        val selectedRaceForCourse = event?.races?.firstOrNull { it.id == joinedRaceId }
+                        val availableScoringTargets = buildList {
+                            add("finish" to "Finish line")
+                            helperGates.forEachIndexed { index, gate ->
+                                add(gate.id to gate.name.ifBlank { "Gate ${index + 1}" })
+                            }
+                        }
+                        if (scoringTargetGateId.isBlank()) {
+                            scoringTargetGateId = organizerScoringSelectionForRace(selectedRaceForCourse)
+                        }
+                        Text(
+                            "Mjerenje vremena za rezultate",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Box {
+                            OutlinedTextField(
+                                value = availableScoringTargets
+                                    .firstOrNull { it.first == scoringTargetGateId }
+                                    ?.second
+                                    ?: "Finish line",
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Gate/cilj za rezultat utrke") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(scoringTargetGateMenuExpanded) {
+                                        detectTapGestures(onTap = { scoringTargetGateMenuExpanded = true })
+                                    }
+                            )
+                            DropdownMenu(
+                                expanded = scoringTargetGateMenuExpanded,
+                                onDismissRequest = { scoringTargetGateMenuExpanded = false }
+                            ) {
+                                availableScoringTargets.forEach { (id, label) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            scoringTargetGateId = id
+                                            scoringTargetGateMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
                         OrganizerGateMap(
                             startA = startA,
                             startB = startB,
@@ -1534,6 +2216,317 @@ fun RegattaScreen(
                             color = muted,
                             fontSize = 12.sp
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            enabled = !isBusy && joinedRaceId.isNotBlank() &&
+                                startA != null && startB != null && finishA != null && finishB != null,
+                            onClick = {
+                                val startLeft = startA ?: run {
+                                    errorMessage = "Nedostaje start lijeva bova."
+                                    return@Button
+                                }
+                                val startRight = startB ?: run {
+                                    errorMessage = "Nedostaje start desna bova."
+                                    return@Button
+                                }
+                                val finishLeft = finishA ?: run {
+                                    errorMessage = "Nedostaje finish lijeva bova."
+                                    return@Button
+                                }
+                                val finishRight = finishB ?: run {
+                                    errorMessage = "Nedostaje finish desna bova."
+                                    return@Button
+                                }
+                                val raceId = joinedRaceId
+                                if (raceId.isBlank()) {
+                                    errorMessage = "Race nije odabran."
+                                    return@Button
+                                }
+                                val completeHelpers = helperGates.filter { it.pointA != null && it.pointB != null }
+                                val gates = mutableListOf<GateDraft>()
+                                gates += GateDraft(
+                                    order = 0,
+                                    type = "start",
+                                    name = "Start",
+                                    pointA = startLeft,
+                                    pointB = startRight
+                                )
+                                completeHelpers.forEachIndexed { index, gate ->
+                                    gates += GateDraft(
+                                        order = index + 1,
+                                        type = "gate",
+                                        name = gate.name.ifBlank { "Gate ${index + 1}" },
+                                        pointA = gate.pointA!!,
+                                        pointB = gate.pointB!!
+                                    )
+                                }
+                                gates += GateDraft(
+                                    order = completeHelpers.size + 1,
+                                    type = "finish",
+                                    name = "Finish",
+                                    pointA = finishLeft,
+                                    pointB = finishRight
+                                )
+                                isBusy = true
+                                errorMessage = null
+                                statusMessage = null
+                                scope.launch {
+                                    val selectedScoringBeforeSave = scoringTargetGateId
+                                    val helperGatesBeforeSave = helperGates
+                                    val previousFinishGateId = event?.races
+                                        ?.firstOrNull { it.id == raceId }
+                                        ?.gates
+                                        ?.firstOrNull { it.type.equals("finish", ignoreCase = true) }
+                                        ?.id
+                                    when (val result = withContext(Dispatchers.IO) {
+                                        apiClient.updateCourse(
+                                            raceId = raceId,
+                                            gates = gates,
+                                            organizerToken = organizerToken
+                                        )
+                                    }) {
+                                        is NasCallResult.Ok -> {
+                                            when (val snapshotResult = withContext(Dispatchers.IO) {
+                                                apiClient.getEventSnapshot(joinedEventId)
+                                            }) {
+                                                is NasCallResult.Ok -> {
+                                                    eventSnapshot = snapshotResult.value
+                                                    val refreshedRace = snapshotResult.value.races
+                                                        .firstOrNull { it.id == raceId }
+                                                    val scoringGateIdForSave = resolveOrganizerScoringGateId(
+                                                        selectedScoringGate = selectedScoringBeforeSave,
+                                                        helperGatesBeforeSave = helperGatesBeforeSave,
+                                                        refreshedRace = refreshedRace,
+                                                        previousFinishGateId = previousFinishGateId
+                                                    )
+                                                    if (scoringGateIdForSave.isNullOrBlank()) {
+                                                        scoringTargetGateId = "finish"
+                                                        statusMessage = "Race course spremljen."
+                                                    } else {
+                                                        when (val scoringResult = withContext(Dispatchers.IO) {
+                                                            apiClient.updateScoringTargetGate(
+                                                                raceId = raceId,
+                                                                organizerToken = organizerToken,
+                                                                gateId = scoringGateIdForSave
+                                                            )
+                                                        }) {
+                                                            is NasCallResult.Ok -> {
+                                                                scoringTargetGateId = organizerScoringSelectionForRace(refreshedRace)
+                                                                statusMessage = "Race course i scoring gate spremljeni."
+                                                            }
+                                                            is NasCallResult.Err -> {
+                                                                errorMessage = scoringResult.message
+                                                                statusMessage = "Race course spremljen, ali scoring gate nije."
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                is NasCallResult.Err -> errorMessage = snapshotResult.message
+                                            }
+                                        }
+                                        is NasCallResult.Err -> errorMessage = result.message
+                                    }
+                                    isBusy = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
+                        ) {
+                            Text(if (isBusy) "Saving..." else "Spremi race course (start/finish/gate)")
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Korekcija crossinga / cilja", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(6.dp))
+                        val liveRace = liveSnapshot
+                        if (liveRace == null || liveRace.participants.isEmpty()) {
+                            Text("Nema live podataka za ručni upis cilja.", color = muted)
+                        } else {
+                            val finishGate = liveRace.gates.firstOrNull { it.type.equals("finish", ignoreCase = true) }
+                            val selectedManualBoat = liveRace.participants.firstOrNull { it.boatId == organizerManualBoatId }
+                            Box {
+                                OutlinedTextField(
+                                    value = selectedManualBoat?.boatName ?: "Odaberi brod",
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("Brod za ručni cilj") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .pointerInput(organizerManualBoatMenuExpanded) {
+                                            detectTapGestures(onTap = { organizerManualBoatMenuExpanded = true })
+                                        }
+                                )
+                                DropdownMenu(
+                                    expanded = organizerManualBoatMenuExpanded,
+                                    onDismissRequest = { organizerManualBoatMenuExpanded = false }
+                                ) {
+                                    liveRace.participants.forEach { participant ->
+                                        DropdownMenuItem(
+                                            text = { Text(participant.boatName) },
+                                            onClick = {
+                                                organizerManualBoatId = participant.boatId
+                                                organizerManualBoatMenuExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            val hasRecordedFinishForBoat = liveRace.crossings.any {
+                                it.boatId == organizerManualBoatId &&
+                                    it.gateType.equals("finish", ignoreCase = true) &&
+                                    !it.status.equals("invalid", ignoreCase = true)
+                            }
+                            Button(
+                                enabled = !isBusy && finishGate != null && organizerManualBoatId.isNotBlank() && joinedRaceId.isNotBlank(),
+                                onClick = {
+                                    val gate = finishGate
+                                    if (gate == null) {
+                                        errorMessage = "Finish gate nije definiran."
+                                        return@Button
+                                    }
+                                    val boatId = organizerManualBoatId
+                                    if (boatId.isBlank()) {
+                                        errorMessage = "Odaberi brod."
+                                        return@Button
+                                    }
+                                    if (hasRecordedFinishForBoat) {
+                                        errorMessage = "Cilj je već automatski upisan za ovaj brod. Koristi status korekciju ispod."
+                                        return@Button
+                                    }
+                                    isBusy = true
+                                    errorMessage = null
+                                    statusMessage = null
+                                    scope.launch {
+                                        when (val result = withContext(Dispatchers.IO) {
+                                            apiClient.sendClientCrossing(
+                                                raceId = joinedRaceId,
+                                                boatId = boatId,
+                                                crossing = RegattaClientCrossingPayload(
+                                                    gateId = gate.id,
+                                                    crossingEpochMillis = System.currentTimeMillis(),
+                                                    source = "organizer_manual"
+                                                )
+                                            )
+                                        }) {
+                                            is NasCallResult.Ok -> {
+                                                statusMessage = "Korekcija cilja upisana ručno."
+                                                when (val liveResult = withContext(Dispatchers.IO) {
+                                                    apiClient.getLiveSnapshot(joinedRaceId)
+                                                }) {
+                                                    is NasCallResult.Ok -> liveSnapshot = liveResult.value
+                                                    is NasCallResult.Err -> errorMessage = liveResult.message
+                                                }
+                                            }
+                                            is NasCallResult.Err -> errorMessage = result.message
+                                        }
+                                        isBusy = false
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
+                            ) {
+                                Text(if (isBusy) "Working..." else "Korekcija cilja (ručno)")
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Crossing status override", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(6.dp))
+                        if (liveRace == null || liveRace.crossings.isEmpty()) {
+                            Text("Nema crossing zapisa.", color = muted)
+                        } else {
+                            liveRace.crossings
+                                .sortedByDescending { it.crossingEpochMs }
+                                .forEach { crossing ->
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(Color(0xFF171717))
+                                                .padding(10.dp)
+                                        ) {
+                                            Text(
+                                                "${crossing.boatName} · ${crossing.gateName}",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                "Vrijeme: ${formatEpoch(crossing.crossingEpochMs)} · source: ${crossing.source}",
+                                                color = Color(0xFFCFD8DC),
+                                                fontSize = 12.sp
+                                            )
+                                            Spacer(Modifier.height(6.dp))
+                                            val selectedStatus = crossingStatusInputs[crossing.id] ?: crossing.status
+                                            Box {
+                                                OutlinedTextField(
+                                                    value = selectedStatus,
+                                                    onValueChange = {},
+                                                    readOnly = true,
+                                                    label = { Text("Status") },
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .pointerInput(crossing.id, organizerCrossingMenuId) {
+                                                            detectTapGestures(onTap = { organizerCrossingMenuId = crossing.id })
+                                                        }
+                                                )
+                                                DropdownMenu(
+                                                    expanded = organizerCrossingMenuId == crossing.id,
+                                                    onDismissRequest = { organizerCrossingMenuId = null }
+                                                ) {
+                                                    listOf("recorded", "invalid").forEach { status ->
+                                                        DropdownMenuItem(
+                                                            text = { Text(status) },
+                                                            onClick = {
+                                                                crossingStatusInputs[crossing.id] = status
+                                                                organizerCrossingMenuId = null
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Spacer(Modifier.height(6.dp))
+                                            Button(
+                                                enabled = !isBusy && joinedRaceId.isNotBlank(),
+                                                onClick = {
+                                                    val desiredStatus = crossingStatusInputs[crossing.id] ?: crossing.status
+                                                    isBusy = true
+                                                    errorMessage = null
+                                                    statusMessage = null
+                                                    scope.launch {
+                                                        when (val result = withContext(Dispatchers.IO) {
+                                                            apiClient.overrideCrossingStatus(
+                                                                raceId = joinedRaceId,
+                                                                crossingId = crossing.id,
+                                                                organizerToken = organizerToken,
+                                                                status = desiredStatus
+                                                            )
+                                                        }) {
+                                                            is NasCallResult.Ok -> {
+                                                                statusMessage = "Status crossinga spremljen."
+                                                                when (val liveResult = withContext(Dispatchers.IO) {
+                                                                    apiClient.getLiveSnapshot(joinedRaceId)
+                                                                }) {
+                                                                    is NasCallResult.Ok -> liveSnapshot = liveResult.value
+                                                                    is NasCallResult.Err -> errorMessage = liveResult.message
+                                                                }
+                                                            }
+                                                            is NasCallResult.Err -> errorMessage = result.message
+                                                        }
+                                                        isBusy = false
+                                                    }
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
+                                            ) {
+                                                Text(if (isBusy) "Saving..." else "Spremi status")
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                        }
                         Spacer(Modifier.height(12.dp))
                         Text("Brodovi", color = Color.White, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(6.dp))
@@ -1577,7 +2570,7 @@ fun RegattaScreen(
                                             Button(
                                                 onClick = {
                                                     scope.launch {
-                                                        val liveRaceId = event.activeRaceId.orEmpty()
+                                                        val liveRaceId = joinedRaceId.trim()
                                                         if (liveRaceId.isNotBlank()) {
                                                             when (val groupResult = withContext(Dispatchers.IO) {
                                                                 apiClient.updateBoatGroup(
@@ -1613,7 +2606,7 @@ fun RegattaScreen(
                                                                 is NasCallResult.Err -> errorMessage = snapshotResult.message
                                                             }
                                                         } else {
-                                                            errorMessage = "Nema aktivnog race za upis penalty-a."
+                                                            errorMessage = "Nema odabranog race/plova za upis penalty-a."
                                                         }
                                                     }
                                                 },
@@ -1766,882 +2759,46 @@ fun RegattaScreen(
                     ) {
                         Text(if (isBusy) "Saving..." else "Next")
                     }
-                }
-            }
-
-            if (joinedEventId.isNotBlank()) {
-                Button(
-                    onClick = { mode = "dashboard" },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
-                ) {
-                    Text("Open Dashboard")
-                }
-            }
-
-            if (mode == "dashboard" && joinedEventId.isNotBlank()) {
-                RegattaSection(title = "Event Snapshot", cardColor = cardColor) {
-                    Text("Event ID: $joinedEventId", color = Color.White)
-                    Text("Race ID: ${joinedRaceId.ifBlank { "--" }}", color = Color.White)
-                    Text("Boat ID: ${joinedBoatId.ifBlank { "--" }}", color = Color.White)
-                    Text("Device ID: ${prefs.deviceId}", color = muted, fontSize = 12.sp)
-                    Spacer(Modifier.height(8.dp))
-                    val event = eventSnapshot
-                    if (event == null) {
-                        Text("Loading event snapshot...", color = muted)
+                    Spacer(Modifier.height(12.dp))
+                    val joinEvent = eventSnapshot
+                    val joinNotices = joinEvent?.noticePosts.orEmpty()
+                    Text("Notice board", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    if (joinNotices.isEmpty()) {
+                        Text("Nema objava od organizatora.", color = muted, fontSize = 12.sp)
                     } else {
-                        if (nextRaceName.isBlank()) {
-                            nextRaceName = "Race ${event.races.size + 1}"
-                        }
-                        Text("Name: ${event.name}", color = Color.White, fontWeight = FontWeight.SemiBold)
-                        Text("Join code: ${event.joinCode}", color = Color.White)
-                        Text("Organizer: ${event.organizerName}", color = Color.White)
-                        if (!event.startDate.isNullOrBlank() || !event.endDate.isNullOrBlank()) {
-                            Text(
-                                "Regatta dates: ${event.startDate ?: "--"} -> ${event.endDate ?: "--"}",
-                                color = Color.White
-                            )
-                        }
-                        if (!event.raceEndTime.isNullOrBlank()) {
-                            Text("Race end time: ${event.raceEndTime}", color = Color.White)
-                        }
-                        Text(
-                            "Regatta length: ${String.format(Locale.US, "%.2f", event.regattaLengthNm)} NM",
-                            color = Color.White
-                        )
-                        Text(
-                            "Public results: ${if (event.isPublic) "Da" else "Ne"}",
-                            color = Color.White
-                        )
-                        Text("Max boats: ${event.maxBoats}", color = Color.White)
-                        Text("Status: ${event.status}", color = Color.White)
-                        if (event.noticeBoard.isNotBlank()) {
-                            Spacer(Modifier.height(6.dp))
-                            Text("Notice board:", color = Color.White, fontWeight = FontWeight.SemiBold)
-                            Text(event.noticeBoard, color = Color(0xFFCFD8DC))
-                            event.noticeBoardUpdatedAt?.let { updatedAt ->
-                                Text("Updated: $updatedAt", color = muted, fontSize = 12.sp)
-                            }
-                        }
-                        Text("Boats: ${event.boats.size}", color = Color.White)
-                        Text("Races: ${event.races.size}", color = Color.White)
-                        Text("Role: ${if (isOrganizer) "Organizer" else "Participant"}", color = Color.White)
-                        Spacer(Modifier.height(8.dp))
-                        event.races.forEach { race ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "Race ${race.sequenceNumber} (${race.state}) · gates ${race.gates.size}",
-                                    color = if (race.id == joinedRaceId) Color(0xFFFFF59D) else Color(0xFFB8E0D0)
-                                )
-                                Button(
-                                    onClick = {
-                                        joinedRaceId = race.id
-                                        prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
-                                        startTimeInput = race.countdownTargetEpochMs?.let(::formatEpochInput).orEmpty()
-                                        scoringTargetGateId = race.scoringTargetGateId.orEmpty()
-                                        organizerRaceDateInput = race.raceDate.orEmpty()
-                                        organizerRaceStartTimeInput = race.startTime ?: organizerRaceStartTimeInput
-                                        organizerRaceEndTimeInput = race.endTime ?: organizerRaceEndTimeInput
-                                        organizerRaceLengthNmInput = race.raceLengthNm
-                                            .takeIf { it > 0.0 }
-                                            ?.let { String.format(Locale.US, "%.2f", it) }
-                                            .orEmpty()
-                                        startA = race.gates.firstOrNull { it.type == "start" }?.pointA
-                                        startB = race.gates.firstOrNull { it.type == "start" }?.pointB
-                                        finishA = race.gates.firstOrNull { it.type == "finish" }?.pointA
-                                        finishB = race.gates.firstOrNull { it.type == "finish" }?.pointB
-                                        helperGates = race.gates
-                                            .filter { it.type == "gate" }
-                                            .map {
-                                                PendingGateDraft(
-                                                    id = it.id.ifBlank { UUID.randomUUID().toString() },
-                                                    name = it.name,
-                                                    pointA = it.pointA,
-                                                    pointB = it.pointB
-                                                )
-                                            }
-                                        pendingHelperName = "Gate ${helperGates.size + 1}"
-                                        pendingHelperA = null
-                                        pendingHelperB = null
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
-                                ) {
-                                    Text("Select")
-                                }
-                            }
-                            Spacer(Modifier.height(6.dp))
-                        }
-                    }
-                }
-
-                if (isOrganizer && eventSnapshot != null) {
-                    RegattaSection(title = "Organizer Controls", cardColor = cardColor) {
-                        OutlinedTextField(
-                            value = noticeBoardInput.ifBlank { eventSnapshot?.noticeBoard.orEmpty() },
-                            onValueChange = { noticeBoardInput = it },
-                            label = { Text("Notice board message") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            enabled = !isBusy,
-                            onClick = {
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.updateNoticeBoard(
-                                                eventId = joinedEventId,
-                                                organizerToken = organizerToken,
-                                                noticeText = noticeBoardInput.ifBlank { eventSnapshot?.noticeBoard.orEmpty() }
-                                            )
-                                        }
-                                    ) {
-                                        is NasCallResult.Ok -> statusMessage = "Notice board updated."
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
-                        ) {
-                            Text(if (isBusy) "Saving..." else "Save Notice")
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = nextRaceName,
-                            onValueChange = { nextRaceName = it },
-                            label = { Text("Next race name") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            enabled = !isBusy,
-                            onClick = {
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.createRace(
-                                                eventId = joinedEventId,
-                                                organizerToken = organizerToken,
-                                                name = nextRaceName
-                                            )
-                                        }
-                                    ) {
-                                        is NasCallResult.Ok -> {
-                                            joinedRaceId = result.value
-                                            prefs.saveJoinedEvent(joinedEventId, joinedRaceId, joinedBoatId)
-                                            statusMessage = "Created and selected ${nextRaceName.ifBlank { "new race" }}."
-                                        }
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
-                        ) {
-                            Text(if (isBusy) "Working..." else "Create Next Race")
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = countdownMinutes,
-                                onValueChange = { countdownMinutes = it },
-                                label = { Text("Countdown min") },
-                                modifier = Modifier.weight(1f)
-                            )
-                            Button(
-                                enabled = joinedRaceId.isNotBlank() && !isBusy,
-                                onClick = {
-                                    val minutes = countdownMinutes.toLongOrNull()?.coerceAtLeast(1L) ?: 5L
-                                    isBusy = true
-                                    errorMessage = null
-                                    scope.launch {
-                                        when (
-                                            val result = withContext(Dispatchers.IO) {
-                                                apiClient.updateCountdown(
-                                                    raceId = joinedRaceId,
-                                                    organizerToken = organizerToken,
-                                                    countdownTargetEpochMs = System.currentTimeMillis() + minutes * 60_000L
-                                                )
-                                            }
-                                        ) {
-                                            is NasCallResult.Ok -> statusMessage = "Countdown synced for $minutes min."
-                                            is NasCallResult.Err -> errorMessage = result.message
-                                        }
-                                        isBusy = false
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = actionOrange)
-                            ) {
-                                Text("Sync")
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = startTimeInput,
-                            onValueChange = { startTimeInput = it },
-                            label = { Text("Start time (yyyy-MM-dd HH:mm:ss)") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Text("Objave (${joinNotices.size})", color = Color(0xFFCFD8DC), fontSize = 12.sp)
                         Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                enabled = joinedRaceId.isNotBlank() && !isBusy,
-                                onClick = {
-                                    val parsedEpoch = parseEpochInput(startTimeInput)
-                                    if (parsedEpoch == null) {
-                                        errorMessage = "Invalid start time format."
-                                        return@Button
-                                    }
-                                    isBusy = true
-                                    errorMessage = null
-                                    scope.launch {
-                                        when (
-                                            val result = withContext(Dispatchers.IO) {
-                                                apiClient.updateCountdown(
-                                                    raceId = joinedRaceId,
-                                                    organizerToken = organizerToken,
-                                                    countdownTargetEpochMs = parsedEpoch
-                                                )
-                                            }
-                                        ) {
-                                            is NasCallResult.Ok -> statusMessage = "Start time updated."
-                                            is NasCallResult.Err -> errorMessage = result.message
-                                        }
-                                        isBusy = false
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = actionOrange)
-                            ) {
-                                Text("Set Start Time")
-                            }
-                            Button(
-                                enabled = joinedRaceId.isNotBlank() && !isBusy,
-                                onClick = {
-                                    val base = parseEpochInput(startTimeInput)
-                                        ?: eventSnapshot?.races?.firstOrNull { it.id == joinedRaceId }?.countdownTargetEpochMs
-                                    if (base == null) {
-                                        errorMessage = "No base start time to adjust."
-                                        return@Button
-                                    }
-                                    val adjusted = base - 15_000L
-                                    startTimeInput = formatEpochInput(adjusted)
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
-                            ) { Text("-15s") }
-                            Button(
-                                enabled = joinedRaceId.isNotBlank() && !isBusy,
-                                onClick = {
-                                    val base = parseEpochInput(startTimeInput)
-                                        ?: eventSnapshot?.races?.firstOrNull { it.id == joinedRaceId }?.countdownTargetEpochMs
-                                    if (base == null) {
-                                        errorMessage = "No base start time to adjust."
-                                        return@Button
-                                    }
-                                    val adjusted = base + 15_000L
-                                    startTimeInput = formatEpochInput(adjusted)
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
-                            ) { Text("+15s") }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Rules: initial start >= +5 min from now; corrections allowed until T-4 min, max ±15s.",
-                            color = muted,
-                            fontSize = 11.sp
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        val selectedRace = eventSnapshot?.races?.firstOrNull { it.id == joinedRaceId }
-                        val targetCandidates = selectedRace?.gates
-                            ?.filterNot { it.type.equals("start", ignoreCase = true) }
-                            .orEmpty()
-                        OutlinedTextField(
-                            value = scoringTargetGateId,
-                            onValueChange = { scoringTargetGateId = it },
-                            label = { Text("Scoring target gate ID") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        if (targetCandidates.isNotEmpty()) {
-                            Spacer(Modifier.height(6.dp))
-                            targetCandidates.forEach { gate ->
-                                Text(
-                                    text = "${gate.name} (${gate.type}) · ${gate.id}",
-                                    color = if (gate.id == scoringTargetGateId) Color(0xFFFFF59D) else muted,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Button(
-                            enabled = joinedRaceId.isNotBlank() && scoringTargetGateId.isNotBlank() && !isBusy,
-                            onClick = {
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.updateScoringTargetGate(
-                                                raceId = joinedRaceId,
-                                                organizerToken = organizerToken,
-                                                gateId = scoringTargetGateId
-                                            )
-                                        }
-                                    ) {
-                                        is NasCallResult.Ok -> statusMessage = "Scoring target gate synced."
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text("Set Scoring Target")
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            RaceStateButton("Lobby", actionBlue) {
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.updateRaceState(
-                                                raceId = joinedRaceId,
-                                                organizerToken = organizerToken,
-                                                state = "lobby"
-                                            )
-                                        }
+                            joinNotices.forEach { post ->
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0xFF171717))
+                                            .padding(8.dp)
                                     ) {
-                                        is NasCallResult.Ok -> statusMessage = "Race state changed to LOBBY."
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            }
-                            RaceStateButton("Armed", actionOrange) {
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.updateRaceState(
-                                                raceId = joinedRaceId,
-                                                organizerToken = organizerToken,
-                                                state = "armed"
-                                            )
-                                        }
-                                    ) {
-                                        is NasCallResult.Ok -> statusMessage = "Race state changed to ARMED."
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            RaceStateButton("Started", actionGreen) {
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.updateRaceState(
-                                                raceId = joinedRaceId,
-                                                organizerToken = organizerToken,
-                                                state = "started"
-                                            )
-                                        }
-                                    ) {
-                                        is NasCallResult.Ok -> statusMessage = "Race state changed to STARTED."
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            }
-                            RaceStateButton("Finished", Color(0xFF6D4C41)) {
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.updateRaceState(
-                                                raceId = joinedRaceId,
-                                                organizerToken = organizerToken,
-                                                state = "finished"
-                                            )
-                                        }
-                                    ) {
-                                        is NasCallResult.Ok -> statusMessage = "Race state changed to FINISHED."
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            }
-                        }
-                    }
-
-                    RegattaSection(title = "Course Setup From GPS", cardColor = cardColor) {
-                        Text("Current GPS point can be snapped into start / finish / multiple helper gates.", color = muted)
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CaptureButton("Start A") { startA = snapshotPoint() }
-                            CaptureButton("Start B") { startB = snapshotPoint() }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CaptureButton("Finish A") { finishA = snapshotPoint() }
-                            CaptureButton("Finish B") { finishB = snapshotPoint() }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = pendingHelperName,
-                            onValueChange = { pendingHelperName = it },
-                            label = { Text("New helper gate name") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CaptureButton("Gate A") { pendingHelperA = snapshotPoint() }
-                            CaptureButton("Gate B") { pendingHelperB = snapshotPoint() }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text("Start A: ${startA?.let(::formatPoint) ?: "--"}", color = Color.White, fontSize = 12.sp)
-                        Text("Start B: ${startB?.let(::formatPoint) ?: "--"}", color = Color.White, fontSize = 12.sp)
-                        Text("Finish A: ${finishA?.let(::formatPoint) ?: "--"}", color = Color.White, fontSize = 12.sp)
-                        Text("Finish B: ${finishB?.let(::formatPoint) ?: "--"}", color = Color.White, fontSize = 12.sp)
-                        Text("Pending gate A: ${pendingHelperA?.let(::formatPoint) ?: "--"}", color = Color.White, fontSize = 12.sp)
-                        Text("Pending gate B: ${pendingHelperB?.let(::formatPoint) ?: "--"}", color = Color.White, fontSize = 12.sp)
-                        Spacer(Modifier.height(10.dp))
-                        Button(
-                            enabled = pendingHelperA != null && pendingHelperB != null,
-                            onClick = {
-                                helperGates = helperGates + PendingGateDraft(
-                                    id = UUID.randomUUID().toString(),
-                                    name = pendingHelperName.ifBlank { "Gate ${helperGates.size + 1}" },
-                                    pointA = pendingHelperA,
-                                    pointB = pendingHelperB
-                                )
-                                pendingHelperName = "Gate ${helperGates.size + 1}"
-                                pendingHelperA = null
-                                pendingHelperB = null
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
-                        ) {
-                            Text("Add Helper Gate")
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        if (helperGates.isEmpty()) {
-                            Text("No helper gates added yet.", color = muted)
-                        } else {
-                            helperGates.forEachIndexed { index, gate ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = "${index + 1}. ${gate.name} · " +
-                                            "${gate.pointA?.let(::formatPoint) ?: "--"} / " +
-                                            "${gate.pointB?.let(::formatPoint) ?: "--"}",
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Spacer(Modifier.height(0.dp))
-                                    Button(
-                                        onClick = {
-                                            helperGates = helperGates.filterNot { it.id == gate.id }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8E2424))
-                                    ) {
-                                        Text("Remove")
-                                    }
-                                }
-                                Spacer(Modifier.height(6.dp))
-                            }
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Button(
-                            enabled = !isBusy && joinedRaceId.isNotBlank() &&
-                                startA != null && startB != null && finishA != null && finishB != null,
-                            onClick = {
-                                val gates = mutableListOf<GateDraft>()
-                                gates += GateDraft(0, "start", "Start", startA!!, startB!!)
-                                helperGates.forEachIndexed { index, gate ->
-                                    if (gate.pointA != null && gate.pointB != null) {
-                                        gates += GateDraft(
-                                            order = index + 1,
-                                            type = "gate",
-                                            name = gate.name,
-                                            pointA = gate.pointA,
-                                            pointB = gate.pointB
-                                        )
-                                    }
-                                }
-                                gates += GateDraft(
-                                    order = helperGates.size + 1,
-                                    type = "finish",
-                                    name = "Finish",
-                                    pointA = finishA!!,
-                                    pointB = finishB!!
-                                )
-                                isBusy = true
-                                errorMessage = null
-                                scope.launch {
-                                    when (
-                                        val result = withContext(Dispatchers.IO) {
-                                            apiClient.updateCourse(
-                                                raceId = joinedRaceId,
-                                                gates = gates,
-                                                organizerToken = organizerToken
-                                            )
-                                        }
-                                    ) {
-                                        is NasCallResult.Ok -> statusMessage = "Course synced to server."
-                                        is NasCallResult.Err -> errorMessage = result.message
-                                    }
-                                    isBusy = false
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
-                        ) {
-                            Text(if (isBusy) "Saving..." else "Save Course")
-                        }
-                    }
-                }
-
-                RegattaSection(title = "Live Race", cardColor = cardColor) {
-                    val live = liveSnapshot
-                    if (live == null) {
-                        Text("Waiting for live race snapshot...", color = muted)
-                    } else {
-                        Text("Race: ${live.raceName}", color = Color.White, fontWeight = FontWeight.SemiBold)
-                        Text("State: ${live.state}", color = Color.White)
-                        Text(
-                            "Countdown target: ${live.countdownTargetEpochMs?.let(::formatEpoch) ?: "--"}",
-                            color = Color.White
-                        )
-                        Text("Participants: ${live.participants.size}", color = Color.White)
-                        Text("Crossings: ${live.crossings.size}", color = Color.White)
-                        Text("Penalties: ${live.penalties.size}", color = Color.White)
-                        Text(
-                            "Scoring target gate: ${live.scoringTargetGateId?.ifBlank { "--" } ?: "--"}",
-                            color = Color.White
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        RegattaCourseMap(
-                            gates = live.gates,
-                            participants = live.participants
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        live.gates.forEach { gate ->
-                            Text(
-                                text = "${gate.order}. ${gate.name} (${gate.type})",
-                                color = Color(0xFFFFF59D)
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        live.participants.take(12).forEach { participant ->
-                            Text(
-                                text = "${participant.boatName} · ${participant.status} · next gate ${participant.nextGateOrder}" +
-                                    " · last ${participant.lastSignalEpochMs?.let(::formatEpoch) ?: "--"}",
-                                color = Color(0xFFB8E0D0),
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                }
-
-                RegattaSection(title = "Scoring Export", cardColor = cardColor) {
-                    Text("Share CSV scoring for active race or whole regatta event.", color = muted)
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            enabled = liveSnapshot != null && eventSnapshot != null,
-                            onClick = {
-                                val event = eventSnapshot ?: return@Button
-                                val live = liveSnapshot ?: return@Button
-                                val rows = computeRaceScoreRows(live, event.boats)
-                                val csv = buildRaceScoringCsv(live, rows)
-                                val file = writeCsvFile(
-                                    context = context,
-                                    fileName = "race_scoring_${sanitizeFileName(live.raceName)}.csv",
-                                    csvContent = csv
-                                )
-                                shareCsvFile(context, file, "Share race scoring")
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
-                        ) {
-                            Text("Share Race CSV")
-                        }
-                        Button(
-                            enabled = eventSnapshot != null,
-                            onClick = {
-                                val event = eventSnapshot ?: return@Button
-                                scope.launch {
-                                    errorMessage = null
-                                    val raceSnapshots = mutableListOf<RegattaLiveSnapshot>()
-                                    for (race in event.races) {
-                                        when (val result = withContext(Dispatchers.IO) { apiClient.getLiveSnapshot(race.id) }) {
-                                            is NasCallResult.Ok -> raceSnapshots += result.value
-                                            is NasCallResult.Err -> {
-                                                errorMessage = result.message
-                                                return@launch
-                                            }
-                                        }
-                                    }
-                                    val table = computeEventScoreTable(event, raceSnapshots)
-                                    val csv = buildEventScoringCsv(event, table)
-                                    val file = writeCsvFile(
-                                        context = context,
-                                        fileName = "regatta_scoring_${sanitizeFileName(event.name)}.csv",
-                                        csvContent = csv
-                                    )
-                                    shareCsvFile(context, file, "Share regatta scoring")
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
-                        ) {
-                            Text("Share Regatta CSV")
-                        }
-                    }
-                }
-
-                RegattaSection(title = "Boat Live View", cardColor = cardColor) {
-                    val live = liveSnapshot
-                    if (live == null || live.participants.isEmpty()) {
-                        Text("No participant data yet.", color = muted)
-                    } else {
-                        live.participants.forEach { participant ->
-                            val participantCrossings = live.crossings
-                                .filter { it.boatId == participant.boatId }
-                                .sortedBy { it.crossingEpochMs }
-                            val participantPenalties = live.penalties
-                                .filter { it.boatId == participant.boatId }
-                            Card(
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF171717))
-                                        .padding(10.dp)
-                                ) {
-                                    Text(
-                                        text = participant.boatName,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp
-                                    )
-                                    Text(
-                                        text = "Skipper: ${participant.skipperName.ifBlank { "--" }}",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Status: ${participant.status.uppercase(Locale.US)}",
-                                        color = Color(0xFFFFF59D),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Group: ${participant.groupCode ?: "--"}  ·  Next gate: ${participant.nextGateOrder}",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Start snapshot: ${participant.startSnapshotEpochMs?.let(::formatEpoch) ?: "--"}",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Start position: ${
-                                            if (participant.startSnapshotLatitude != null && participant.startSnapshotLongitude != null) {
-                                                String.format(
-                                                    Locale.US,
-                                                    "%.6f, %.6f",
-                                                    participant.startSnapshotLatitude,
-                                                    participant.startSnapshotLongitude
-                                                )
-                                            } else {
-                                                "--"
-                                            }
-                                        }",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Last signal: ${participant.lastSignalEpochMs?.let(::formatEpoch) ?: "--"}",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Speed: ${
-                                            participant.lastSpeedKnots?.let {
-                                                String.format(Locale.US, "%.1f kn", it)
-                                            } ?: "--"
-                                        }",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Last position: ${
-                                            if (participant.lastLatitude != null && participant.lastLongitude != null) {
-                                                String.format(
-                                                    Locale.US,
-                                                    "%.6f, %.6f",
-                                                    participant.lastLatitude,
-                                                    participant.lastLongitude
-                                                )
-                                            } else {
-                                                "--"
-                                            }
-                                        }",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Finished: ${participant.finishedAtEpochMs?.let(::formatEpoch) ?: "--"}",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp
-                                    )
-                                    Spacer(Modifier.height(8.dp))
-
-                                    Text(
-                                        text = "Gate Crossings",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 13.sp
-                                    )
-                                    if (participantCrossings.isEmpty()) {
-                                        Text("No crossings yet.", color = muted, fontSize = 12.sp)
-                                    } else {
-                                        participantCrossings.forEach { crossing ->
-                                            Text(
-                                                text = "${crossing.gateOrder}. ${crossing.gateName} " +
-                                                    "(${crossing.gateType}) · ${formatEpoch(crossing.crossingEpochMs)} " +
-                                                    "· ${crossing.source}",
-                                                color = Color(0xFFB8E0D0),
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                    }
-
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(
-                                        text = "Penalties",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 13.sp
-                                    )
-                                    if (participantPenalties.isEmpty()) {
-                                        Text("No penalties.", color = muted, fontSize = 12.sp)
-                                    } else {
-                                        participantPenalties.forEach { penalty ->
-                                            Text(
-                                                text = "${penalty.value?.let { String.format(Locale.US, "%.1f%%", it) } ?: "--"} · ${penalty.reason.ifBlank { "--" }} " +
-                                                    "· ${penalty.createdAt}",
-                                                color = Color(0xFFFFCC80),
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                    }
-                                    if (isOrganizer) {
-                                        Spacer(Modifier.height(8.dp))
+                                        Text(post.noticeText.ifBlank { "--" }, color = Color.White, fontSize = 12.sp)
                                         Text(
-                                            text = "Organizer Tools",
-                                            color = Color.White,
-                                            fontWeight = FontWeight.SemiBold,
-                                            fontSize = 13.sp
+                                            formatIsoDateTime(post.publishedAt),
+                                            color = Color(0xFFB0BEC5),
+                                            fontSize = 11.sp
                                         )
-                                        Spacer(Modifier.height(6.dp))
-                                        OutlinedTextField(
-                                            value = groupInputs[participant.boatId].orEmpty(),
-                                            onValueChange = { groupInputs[participant.boatId] = it },
-                                            label = { Text("Group") },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                        Spacer(Modifier.height(6.dp))
-                                        Button(
-                                            onClick = {
-                                                scope.launch {
-                                                    when (
-                                                        val result = withContext(Dispatchers.IO) {
-                                                            apiClient.updateBoatGroup(
-                                                                eventId = joinedEventId,
-                                                                boatId = participant.boatId,
-                                                                organizerToken = organizerToken,
-                                                                groupCode = groupInputs[participant.boatId].orEmpty()
-                                                            )
-                                                        }
-                                                    ) {
-                                                        is NasCallResult.Ok -> statusMessage =
-                                                            "Updated group for ${participant.boatName}."
-                                                        is NasCallResult.Err -> errorMessage = result.message
-                                                    }
-                                                }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
-                                        ) {
-                                            Text("Save Group")
-                                        }
-                                        Spacer(Modifier.height(8.dp))
-                                        OutlinedTextField(
-                                            value = penaltyValueInputs[participant.boatId].orEmpty(),
-                                            onValueChange = { penaltyValueInputs[participant.boatId] = it },
-                                            label = { Text("Penalty (%)") },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                        Spacer(Modifier.height(6.dp))
-                                        OutlinedTextField(
-                                            value = penaltyReasonInputs[participant.boatId].orEmpty(),
-                                            onValueChange = { penaltyReasonInputs[participant.boatId] = it },
-                                            label = { Text("Reason") },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                        Spacer(Modifier.height(6.dp))
-                                        Button(
-                                            enabled = joinedRaceId.isNotBlank(),
-                                            onClick = {
-                                                scope.launch {
-                                                    when (
-                                                        val result = withContext(Dispatchers.IO) {
-                                                            apiClient.createPenalty(
-                                                                raceId = joinedRaceId,
-                                                                boatId = participant.boatId,
-                                                                organizerToken = organizerToken,
-                                                                type = "percent",
-                                                                value = penaltyValueInputs[participant.boatId].orEmpty()
-                                                                    .toDoubleOrNull(),
-                                                                reason = penaltyReasonInputs[participant.boatId].orEmpty()
-                                                            )
-                                                        }
-                                                    ) {
-                                                        is NasCallResult.Ok -> {
-                                                            statusMessage = "Penalty added for ${participant.boatName}."
-                                                            penaltyReasonInputs[participant.boatId] = ""
-                                                        }
-                                                        is NasCallResult.Err -> errorMessage = result.message
-                                                    }
-                                                }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8E2424))
-                                        ) {
-                                            Text("Add Penalty")
-                                        }
                                     }
                                 }
                             }
-                            Spacer(Modifier.height(8.dp))
                         }
                     }
                 }
             }
+
+            
         }
     }
     if (organizerLoginAskedCreateNew) {
@@ -3117,6 +3274,15 @@ private fun formatEpoch(epochMillis: Long): String {
     return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(epochMillis))
 }
 
+private fun formatIsoDateTime(value: String?): String {
+    if (value.isNullOrBlank()) return "--"
+    return runCatching {
+        java.time.Instant.parse(value).toEpochMilli()
+    }.getOrNull()?.let { epoch ->
+        SimpleDateFormat(NOTICE_TIMESTAMP_PATTERN, Locale.US).format(Date(epoch))
+    } ?: value
+}
+
 private fun formatEpochInput(epochMillis: Long): String {
     return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(epochMillis))
 }
@@ -3175,6 +3341,14 @@ private data class EventScoreRow(
     val racePoints: List<Double?>
 )
 
+private data class RaceGateTimelineRow(
+    val boatId: String,
+    val boatName: String,
+    val groupCode: String,
+    val gateTimes: List<Long?>,
+    val correctedElapsedMs: Long?
+)
+
 private fun computeRaceScoreRows(
     live: RegattaLiveSnapshot,
     boats: List<RegattaBoatSummary>
@@ -3182,6 +3356,7 @@ private fun computeRaceScoreRows(
     val boatMap = boats.associateBy { it.id }
     val t0 = live.countdownTargetEpochMs
     val scoringTargetGateId = live.scoringTargetGateId
+    val dnfPoints = live.participants.size.coerceAtLeast(1).toDouble()
     data class Working(
         val participant: RegattaParticipantLive,
         val completedGates: Int,
@@ -3231,7 +3406,7 @@ private fun computeRaceScoreRows(
                 completedRank += 1
                 if (completedRank == 1) 0.75 else completedRank.toDouble()
             } else {
-                (ordered.count { it.correctedElapsedMs != null } + 1).toDouble()
+                dnfPoints
             }
             row.copy(racePoints = points)
         }
@@ -3246,12 +3421,13 @@ private fun computeRaceScoreRows(
     )
     return ordered.map { item ->
         val boat = boatMap[item.participant.boatId]
+        val isDnf = item.targetCrossingEpochMs == null
         RaceScoreRow(
             boatId = item.participant.boatId,
             boatName = item.participant.boatName,
             skipperName = item.participant.skipperName.ifBlank { boat?.skipperName.orEmpty() },
             groupCode = item.participant.groupCode ?: boat?.groupCode.orEmpty(),
-            status = item.participant.status,
+            status = if (isDnf) "DNF" else item.participant.status,
             completedGates = item.completedGates,
             realElapsedMs = item.targetCrossingEpochMs?.let { target ->
                 t0?.let { (target - it).coerceAtLeast(0L) }
@@ -3261,6 +3437,75 @@ private fun computeRaceScoreRows(
             racePoints = item.racePoints
         )
     }
+}
+
+private fun computeRaceGateTimelineRows(
+    live: RegattaLiveSnapshot,
+    boats: List<RegattaBoatSummary>
+): Pair<List<String>, List<RaceGateTimelineRow>> {
+    val targetGateId = live.scoringTargetGateId
+    val orderedGates = live.gates
+        .filterNot { it.type.equals("start", ignoreCase = true) }
+        .sortedBy { it.order }
+    val headers = orderedGates.map { gate ->
+        when {
+            gate.type.equals("finish", ignoreCase = true) -> "Finish"
+            gate.name.isNotBlank() -> gate.name
+            else -> "Gate ${gate.order}"
+        }
+    }
+    val boatMap = boats.associateBy { it.id }
+    val rows = live.participants.map { participant ->
+        val boat = boatMap[participant.boatId]
+        val group = participant.groupCode?.ifBlank { "UNGROUPED" }
+            ?: boat?.groupCode?.ifBlank { "UNGROUPED" }
+            ?: "UNGROUPED"
+        val relevantCrossings = live.crossings
+            .filter { crossing ->
+                crossing.boatId == participant.boatId &&
+                    !crossing.status.equals("invalid", ignoreCase = true)
+            }
+        val gateTimes = orderedGates.map { gate ->
+            relevantCrossings
+                .filter { it.gateId == gate.id }
+                .minOfOrNull { it.crossingEpochMs }
+        }
+        val penaltyPercent = live.penalties
+            .filter { it.boatId == participant.boatId }
+            .sumOf { penalty ->
+                if (penalty.type.contains("percent", ignoreCase = true)) penalty.value ?: 0.0 else 0.0
+            }
+        val targetCrossing = if (targetGateId.isNullOrBlank()) {
+            null
+        } else {
+            relevantCrossings
+                .filter { it.gateId == targetGateId }
+                .minOfOrNull { it.crossingEpochMs }
+        }
+        val realElapsed = if (targetCrossing != null && live.countdownTargetEpochMs != null) {
+            (targetCrossing - live.countdownTargetEpochMs).coerceAtLeast(0L)
+        } else {
+            null
+        }
+        val correctedElapsed = realElapsed?.let { base ->
+            (base * (1.0 + penaltyPercent / 100.0)).toLong()
+        }
+        RaceGateTimelineRow(
+            boatId = participant.boatId,
+            boatName = participant.boatName,
+            groupCode = group,
+            gateTimes = gateTimes,
+            correctedElapsedMs = correctedElapsed
+        )
+    }.sortedWith(
+        compareBy<RaceGateTimelineRow>(
+            { it.groupCode },
+            { it.correctedElapsedMs == null },
+            { it.correctedElapsedMs ?: Long.MAX_VALUE },
+            { it.boatName.lowercase(Locale.US) }
+        )
+    )
+    return headers to rows
 }
 
 private fun computeEventScoreTable(
@@ -3312,8 +3557,8 @@ private fun buildRaceScoringCsv(
             csvCell(row.groupCode),
             csvCell(row.status),
             row.completedGates.toString(),
-            row.realElapsedMs?.let(::formatDurationFromMillis).orEmpty(),
-            row.correctedElapsedMs?.let(::formatDurationFromMillis).orEmpty(),
+            if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.realElapsedMs?.let(::formatDurationFromMillis).orEmpty(),
+            if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.correctedElapsedMs?.let(::formatDurationFromMillis).orEmpty(),
             row.penaltyPercent.toString(),
             row.racePoints.toString()
         ).joinToString(",")
@@ -3364,9 +3609,9 @@ private fun buildCombinedResultsCsv(
                 csvCell(groupName),
                 (index + 1).toString(),
                 csvCell(row.boatName),
-                csvCell(row.realElapsedMs?.let(::formatDurationFromMillis).orEmpty()),
+                csvCell(if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.realElapsedMs?.let(::formatDurationFromMillis).orEmpty()),
                 String.format(Locale.US, "%.1f", row.penaltyPercent),
-                csvCell(row.correctedElapsedMs?.let(::formatDurationFromMillis).orEmpty()),
+                csvCell(if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.correctedElapsedMs?.let(::formatDurationFromMillis).orEmpty()),
                 String.format(Locale.US, "%.2f", row.racePoints)
             ).joinToString(",")
         }

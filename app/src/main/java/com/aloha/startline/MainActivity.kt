@@ -127,6 +127,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -343,6 +344,8 @@ fun StartLineScreen() {
     var regattaLastTrackEpochMs by remember { mutableLongStateOf(0L) }
     var regattaCrossingContext by remember { mutableStateOf<RegattaCrossingContext?>(null) }
     var regattaReportedGateCrossings by remember { mutableStateOf(setOf<String>()) }
+    var regattaPendingCrossings by remember { mutableStateOf<List<PendingRegattaCrossing>>(emptyList()) }
+    var regattaPendingStartSnapshot by remember { mutableStateOf<PendingStartSnapshot?>(null) }
     var regattaStartSnapshotSentRaceId by remember { mutableStateOf("") }
     var regattaStartSnapshotSending by remember { mutableStateOf(false) }
     var regattaSessionLocked by remember { mutableStateOf(false) }
@@ -352,6 +355,7 @@ fun StartLineScreen() {
     var regattaStopRaceTapCount by remember { mutableIntStateOf(0) }
     var regattaStopRaceLastTapEpochMs by remember { mutableLongStateOf(0L) }
     var regattaLiveSnapshot by remember { mutableStateOf<com.aloha.startline.regatta.RegattaLiveSnapshot?>(null) }
+    var regattaEventSnapshot by remember { mutableStateOf<com.aloha.startline.regatta.RegattaEventSnapshot?>(null) }
     var raceMapBoatMenuExpanded by remember { mutableStateOf(false) }
     var raceMapBoatSearchQuery by remember { mutableStateOf("") }
     var raceMapSelectedBoatId by remember { mutableStateOf("") }
@@ -550,6 +554,7 @@ fun StartLineScreen() {
             regattaStopRaceTapCount = 0
             regattaStopRaceLastTapEpochMs = 0L
             regattaLiveSnapshot = null
+            regattaEventSnapshot = null
             raceMapSelectedBoatId = ""
             raceMapBoatSearchQuery = ""
             raceMapBoatMenuExpanded = false
@@ -562,6 +567,8 @@ fun StartLineScreen() {
         if (!shouldReceive || raceId.isBlank() || boatId.isBlank()) {
             regattaCrossingContext = null
             regattaReportedGateCrossings = emptySet()
+            regattaPendingCrossings = emptyList()
+            regattaPendingStartSnapshot = null
             regattaStartSnapshotSentRaceId = ""
             regattaStartSnapshotSending = false
             return@LaunchedEffect
@@ -569,7 +576,6 @@ fun StartLineScreen() {
         when (val live = withContext(Dispatchers.IO) { regattaClient.getLiveSnapshot(raceId) }) {
             is NasCallResult.Ok -> {
                 regattaCrossingContext = RegattaCrossingContext(
-                    raceState = live.value.state,
                     countdownTargetEpochMs = live.value.countdownTargetEpochMs,
                     gates = live.value.gates
                 )
@@ -592,10 +598,12 @@ fun StartLineScreen() {
     LaunchedEffect(regattaJoinModeActive, regattaRaceSessionRunning) {
         if (!regattaJoinModeActive) {
             regattaLiveSnapshot = null
+            regattaEventSnapshot = null
             return@LaunchedEffect
         }
         while (regattaJoinModeActive) {
             if (!regattaRaceSessionRunning) {
+                regattaLiveSnapshot = null
                 delay(1_000L)
                 continue
             }
@@ -606,6 +614,7 @@ fun StartLineScreen() {
             } else {
                 when (val eventResult = withContext(Dispatchers.IO) { regattaClient.getEventSnapshot(eventId) }) {
                     is NasCallResult.Ok -> {
+                        regattaEventSnapshot = eventResult.value
                         val nowMs = System.currentTimeMillis()
                         val selectedRace = selectRegattaRaceForToday(
                             races = eventResult.value.races,
@@ -626,6 +635,7 @@ fun StartLineScreen() {
                         }
                     }
                     is NasCallResult.Err -> {
+                        regattaEventSnapshot = null
                         regattaSelectedRaceId = ""
                         regattaLiveSnapshot = null
                     }
@@ -666,6 +676,15 @@ fun StartLineScreen() {
             )
             if (result is NasCallResult.Ok) {
                 regattaStartSnapshotSentRaceId = raceId
+                regattaPendingStartSnapshot = null
+            } else {
+                regattaPendingStartSnapshot = PendingStartSnapshot(
+                    raceId = raceId,
+                    boatId = boatId,
+                    latitude = locationAtStart.latitude,
+                    longitude = locationAtStart.longitude,
+                    epochMillis = targetEpochMs
+                )
             }
             regattaStartSnapshotSending = false
         }
@@ -689,7 +708,6 @@ fun StartLineScreen() {
             regattaJoinModeActive &&
             (targetEpochMs == null || nowMs < (targetEpochMs - 30L * 60L * 1_000L))
         ) return@LaunchedEffect
-        if (!context.raceState.equals("started", ignoreCase = true)) return@LaunchedEffect
         val currentSample = findClosestSampleByEpoch(gpsSamples, nowMs) ?: return@LaunchedEffect
         val previousSample = findClosestSampleByElapsed(
             samples = gpsSamples,
@@ -712,15 +730,15 @@ fun StartLineScreen() {
             maxDistanceMeters = REGATTA_CROSSING_MAX_DISTANCE_METERS
         )
         if (crossings.isEmpty()) return@LaunchedEffect
-        val newGateIds = crossings.filterNot { regattaReportedGateCrossings.contains(it.id) }.map { it.id }
+        val alreadyHandled = regattaReportedGateCrossings + regattaPendingCrossings.map { it.gateId }.toSet()
+        val newGateIds = crossings.filterNot { alreadyHandled.contains(it.id) }.map { it.id }
         if (newGateIds.isEmpty()) return@LaunchedEffect
-        regattaReportedGateCrossings = regattaReportedGateCrossings + newGateIds
         val prevEpochMs = elapsedToEpochMillis(previousSample.timestampMs)
         val currEpochMs = elapsedToEpochMillis(currentSample.timestampMs)
         launch(Dispatchers.IO) {
             newGateIds.forEach { gateId ->
                 val crossingEpochMs = ((prevEpochMs + currEpochMs) / 2L).coerceAtLeast(1L)
-                regattaClient.sendClientCrossing(
+                val result = regattaClient.sendClientCrossing(
                     raceId = raceId,
                     boatId = boatId,
                     crossing = RegattaClientCrossingPayload(
@@ -728,6 +746,16 @@ fun StartLineScreen() {
                         crossingEpochMillis = crossingEpochMs
                     )
                 )
+                if (result is NasCallResult.Ok) {
+                    regattaReportedGateCrossings = regattaReportedGateCrossings + gateId
+                } else {
+                    regattaPendingCrossings = regattaPendingCrossings + PendingRegattaCrossing(
+                        raceId = raceId,
+                        boatId = boatId,
+                        gateId = gateId,
+                        crossingEpochMillis = crossingEpochMs
+                    )
+                }
             }
         }
     }
@@ -984,6 +1012,7 @@ fun StartLineScreen() {
         }
     }
     val raceCountdownOvertime = (raceRemainingSeconds ?: 1L) < 0L
+    val regattaNoticePosts = regattaEventSnapshot?.noticePosts.orEmpty()
     val raceMapParticipants = regattaLiveSnapshot?.participants.orEmpty()
     val regattaJoinedParticipant = raceMapParticipants.firstOrNull { it.boatId == regattaPrefs.joinedBoatId }
     val regattaFinishEpochMs = regattaJoinedParticipant?.finishedAtEpochMs
@@ -1008,18 +1037,17 @@ fun StartLineScreen() {
     } else {
         null
     }
+    val regattaPostFinishWindowOpen = regattaFinishEpochMs == null ||
+        raceNowEpochMs < (regattaFinishEpochMs + 15L * 60L * 1_000L)
     val regattaTransmitEnabled = if (!regattaJoinModeActive) {
         true
     } else {
         regattaRaceSessionRunning &&
             raceCountdownTarget != null &&
-            raceNowEpochMs >= (raceCountdownTarget - 30L * 60L * 1000L)
+            raceNowEpochMs >= (raceCountdownTarget - 30L * 60L * 1000L) &&
+            regattaPostFinishWindowOpen
     }
-    val regattaTrackTransmitEnabled = regattaTransmitEnabled &&
-        (
-            regattaFinishEpochMs == null ||
-                raceNowEpochMs < (regattaFinishEpochMs + 15L * 60L * 1_000L)
-            )
+    val regattaTrackTransmitEnabled = regattaTransmitEnabled && regattaPostFinishWindowOpen
     val regattaRaceStatusText = when {
         !regattaRaceSessionRunning -> "Race stopped"
         regattaFinishEpochMs != null &&
@@ -1176,6 +1204,40 @@ fun StartLineScreen() {
                     )
                 )
             )
+            val pendingSnap = regattaPendingStartSnapshot
+            if (pendingSnap != null && regattaStartSnapshotSentRaceId != pendingSnap.raceId) {
+                val snapResult = regattaClient.sendStartSnapshot(
+                    raceId = pendingSnap.raceId,
+                    boatId = pendingSnap.boatId,
+                    latitude = pendingSnap.latitude,
+                    longitude = pendingSnap.longitude,
+                    epochMillis = pendingSnap.epochMillis
+                )
+                if (snapResult is NasCallResult.Ok) {
+                    regattaStartSnapshotSentRaceId = pendingSnap.raceId
+                    regattaPendingStartSnapshot = null
+                }
+            }
+            val pending = regattaPendingCrossings.toList()
+            if (pending.isNotEmpty()) {
+                val stillPending = mutableListOf<PendingRegattaCrossing>()
+                pending.forEach { pc ->
+                    val cResult = regattaClient.sendClientCrossing(
+                        raceId = pc.raceId,
+                        boatId = pc.boatId,
+                        crossing = RegattaClientCrossingPayload(
+                            gateId = pc.gateId,
+                            crossingEpochMillis = pc.crossingEpochMillis
+                        )
+                    )
+                    if (cResult is NasCallResult.Ok) {
+                        regattaReportedGateCrossings = regattaReportedGateCrossings + pc.gateId
+                    } else {
+                        stillPending.add(pc)
+                    }
+                }
+                regattaPendingCrossings = stillPending
+            }
         }
     }
     val settingsScrollState = rememberScrollState()
@@ -1785,6 +1847,10 @@ fun StartLineScreen() {
                         AppScreen.Settings
                     )
                     if (currentScreen in blockedScreens) {
+                        currentScreen = AppScreen.Regatta
+                    }
+                } else {
+                    if (currentScreen == AppScreen.RaceStartLine || currentScreen == AppScreen.RaceMap) {
                         currentScreen = AppScreen.Regatta
                     }
                 }
@@ -3403,7 +3469,18 @@ fun StartLineScreen() {
                             .fillMaxSize()
                             .background(Color.Black)
                     ) {
-                        HelpScreen(modifier = Modifier.fillMaxSize())
+                        HelpScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            onOpenOrganizerFromSuperuser = { eventId, organizerToken ->
+                                regattaPrefs.saveOrganizerSession(eventId, organizerToken)
+                                regattaPrefs.saveLastOrganizerAccessValue(organizerToken)
+                                regattaPrefs.saveJoinedEvent(eventId, "", "")
+                                regattaSessionLocked = true
+                                regattaJoinModeActive = false
+                                regattaRaceSessionRunning = false
+                                currentScreen = AppScreen.Regatta
+                            }
+                        )
                     }
                     return@Column
                 }
@@ -3492,6 +3569,43 @@ fun StartLineScreen() {
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
+                                if (regattaNoticePosts.isNotEmpty()) {
+                                    Text(
+                                        text = "Notice board (${regattaNoticePosts.size})",
+                                        color = Color(0xFFCFD8DC),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(120.dp)
+                                            .verticalScroll(rememberScrollState()),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        regattaNoticePosts.forEach { post ->
+                                            Card(modifier = Modifier.fillMaxWidth()) {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .background(Color(0xFF171717))
+                                                        .padding(8.dp)
+                                                ) {
+                                                    Text(
+                                                        post.noticeText.ifBlank { "--" },
+                                                        color = Color.White,
+                                                        fontSize = 12.sp
+                                                    )
+                                                    Text(
+                                                        formatRegattaNoticeTimestamp(post.publishedAt),
+                                                        color = Color(0xFFB0BEC5),
+                                                        fontSize = 11.sp
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         },
                         countdownDisplayText = raceCountdownDisplay,
@@ -3787,9 +3901,21 @@ private data class RaceTrackPoint(
 )
 private data class AverageMotion(val speedMps: Double, val headingDeg: Double?)
 private data class RegattaCrossingContext(
-    val raceState: String,
     val countdownTargetEpochMs: Long?,
     val gates: List<com.aloha.startline.regatta.RegattaGate>
+)
+private data class PendingRegattaCrossing(
+    val raceId: String,
+    val boatId: String,
+    val gateId: String,
+    val crossingEpochMillis: Long
+)
+private data class PendingStartSnapshot(
+    val raceId: String,
+    val boatId: String,
+    val latitude: Double,
+    val longitude: Double,
+    val epochMillis: Long
 )
 private data class LineDistanceInfo(
     val distanceMeters: Double,
@@ -4023,6 +4149,15 @@ private fun formatPostZeroElapsed(totalSeconds: Long): String {
         val minutes = (s % 3600L) / 60L
         String.format(Locale.US, "%d:%02d", hours, minutes)
     }
+}
+
+private fun formatRegattaNoticeTimestamp(value: String?): String {
+    if (value.isNullOrBlank()) return "--"
+    return runCatching {
+        Instant.parse(value).toEpochMilli()
+    }.getOrNull()?.let { epoch ->
+        SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(Date(epoch))
+    } ?: value
 }
 
 private fun elapsedToEpochMillis(elapsedRealtimeMs: Long): Long {

@@ -1,27 +1,51 @@
 package com.aloha.startline
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aloha.startline.nas.NasCallResult
+import com.aloha.startline.regatta.AdminRegattaEventSummary
+import com.aloha.startline.regatta.RegattaApiClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 /**
  * Scrollable in-app help (English). Styled for dark background (parent provides black).
  */
 @Composable
-fun HelpScreen(modifier: Modifier = Modifier) {
+fun HelpScreen(
+    modifier: Modifier = Modifier,
+    onOpenOrganizerFromSuperuser: (eventId: String, organizerToken: String) -> Unit = { _, _ -> }
+) {
     val scroll = rememberScrollState()
     val bodyStyle = MaterialTheme.typography.bodyMedium.copy(
         color = Color.White,
@@ -34,6 +58,19 @@ fun HelpScreen(modifier: Modifier = Modifier) {
         fontSize = 17.sp
     )
     val subStyle = bodyStyle.copy(fontWeight = FontWeight.SemiBold)
+    val scope = rememberCoroutineScope()
+    val apiClient = remember { RegattaApiClient() }
+    var showSuperuserLogin by remember { mutableStateOf(false) }
+    var superuserUsername by remember { mutableStateOf("") }
+    var superuserPassword by remember { mutableStateOf("") }
+    var superuserToken by remember { mutableStateOf("") }
+    var superuserLoggedInAs by remember { mutableStateOf("") }
+    var superuserBusy by remember { mutableStateOf(false) }
+    var superuserStatusMessage by remember { mutableStateOf<String?>(null) }
+    var superuserErrorMessage by remember { mutableStateOf<String?>(null) }
+    var adminEvents by remember { mutableStateOf<List<AdminRegattaEventSummary>>(emptyList()) }
+    var pendingDeleteEvent by remember { mutableStateOf<AdminRegattaEventSummary?>(null) }
+    var deleteConfirmVisible by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -217,6 +254,291 @@ fun HelpScreen(modifier: Modifier = Modifier) {
                 "— Crew Aloha, BluSail24",
             style = bodyStyle.copy(fontStyle = FontStyle.Italic)
         )
+        Spacer(Modifier.height(28.dp))
+
+        Text(text = "Superuser", style = sectionTitleStyle)
+        Spacer(Modifier.height(8.dp))
+        Button(
+            enabled = !superuserBusy,
+            onClick = {
+                showSuperuserLogin = true
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+        ) {
+            Text("Login superuser")
+        }
+
+        superuserStatusMessage?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = Color(0xFFB8E0D0), style = bodyStyle)
+        }
+        superuserErrorMessage?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = Color(0xFFFF8A80), style = bodyStyle)
+        }
+
+        if (superuserToken.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Prijavljen: $superuserLoggedInAs", color = Color.White, fontSize = 13.sp)
+                Spacer(Modifier.weight(1f))
+                Button(
+                    enabled = !superuserBusy,
+                    onClick = {
+                        scope.launch {
+                            if (superuserToken.isBlank()) return@launch
+                            superuserBusy = true
+                            superuserErrorMessage = null
+                            when (val result = withContext(Dispatchers.IO) {
+                                apiClient.listAdminEvents(superuserToken)
+                            }) {
+                                is NasCallResult.Ok -> {
+                                    adminEvents = result.value
+                                    superuserStatusMessage = "Lista regata osvježena."
+                                }
+                                is NasCallResult.Err -> superuserErrorMessage = result.message
+                            }
+                            superuserBusy = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                ) {
+                    Text("Osvježi")
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        superuserToken = ""
+                        superuserLoggedInAs = ""
+                        adminEvents = emptyList()
+                        superuserStatusMessage = "Superuser odjavljen."
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8E2424))
+                ) {
+                    Text("Logout")
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "Sve regate (${adminEvents.size}) — long press za brisanje",
+                style = subStyle
+            )
+            Spacer(Modifier.height(8.dp))
+            if (adminEvents.isEmpty()) {
+                Text("Nema regata za prikaz.", color = Color(0xFFCFD8DC), style = bodyStyle)
+            } else {
+                adminEvents.forEach { event ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = { },
+                                onLongClick = {
+                                    pendingDeleteEvent = event
+                                    deleteConfirmVisible = true
+                                }
+                            )
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp)
+                        ) {
+                            Text(event.name, color = Color.White, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Public: ${if (event.isPublic) "Da" else "Ne"}",
+                                    color = Color(0xFFCFD8DC),
+                                    fontSize = 12.sp
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    text = "Status: ${event.status}",
+                                    color = Color(0xFFCFD8DC),
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Text(
+                                text = "Datumi: ${event.startDate ?: "--"} -> ${event.endDate ?: "--"}",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                text = "Join: ${event.joinCode} · Org: ${event.organizerName.ifBlank { "--" }}",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                text = "Organizer hash: ${event.organizerCodeHash.ifBlank { "--" }}",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                text = "Race: ${event.racesCount}, Bodovi: ${event.pointsCount}, Brodovi: ${event.boatsCount}",
+                                color = Color(0xFFCFD8DC),
+                                fontSize = 12.sp
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Button(
+                                enabled = !superuserBusy,
+                                onClick = {
+                                    scope.launch {
+                                        if (superuserToken.isBlank()) {
+                                            superuserErrorMessage = "Nema aktivnog superuser tokena."
+                                            return@launch
+                                        }
+                                        superuserBusy = true
+                                        superuserErrorMessage = null
+                                        superuserStatusMessage = null
+                                        when (val openResult = withContext(Dispatchers.IO) {
+                                            apiClient.createAdminOrganizerSession(event.eventId, superuserToken)
+                                        }) {
+                                            is NasCallResult.Ok -> {
+                                                superuserStatusMessage = "Otvaram organizer editor za '${event.name}'."
+                                                onOpenOrganizerFromSuperuser(
+                                                    openResult.value.eventId,
+                                                    openResult.value.organizerToken
+                                                )
+                                            }
+                                            is NasCallResult.Err -> superuserErrorMessage = openResult.message
+                                        }
+                                        superuserBusy = false
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0))
+                            ) {
+                                Text(if (superuserBusy) "Working..." else "Open as organizer")
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+            }
+        }
         Spacer(Modifier.height(32.dp))
+    }
+
+    if (deleteConfirmVisible && pendingDeleteEvent != null) {
+        val event = pendingDeleteEvent!!
+        AlertDialog(
+            onDismissRequest = {
+                deleteConfirmVisible = false
+                pendingDeleteEvent = null
+            },
+            title = { Text("Potvrda brisanja") },
+            text = {
+                Text(
+                    "Obrisati regatu '${event.name}'?\n\n" +
+                        "Ovo briše i sve povezane race/plovove, brodove i rezultate."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (superuserToken.isBlank()) {
+                            superuserErrorMessage = "Superuser token nije aktivan."
+                            deleteConfirmVisible = false
+                            pendingDeleteEvent = null
+                            return@Button
+                        }
+                        val eventId = event.eventId
+                        val eventName = event.name
+                        deleteConfirmVisible = false
+                        pendingDeleteEvent = null
+                        scope.launch {
+                            superuserBusy = true
+                            superuserErrorMessage = null
+                            superuserStatusMessage = null
+                            when (val deleteResult = withContext(Dispatchers.IO) {
+                                apiClient.deleteAdminEvent(eventId, superuserToken)
+                            }) {
+                                is NasCallResult.Ok -> {
+                                    superuserStatusMessage = "Regata '$eventName' je obrisana."
+                                    when (val listResult = withContext(Dispatchers.IO) {
+                                        apiClient.listAdminEvents(superuserToken)
+                                    }) {
+                                        is NasCallResult.Ok -> adminEvents = listResult.value
+                                        is NasCallResult.Err -> superuserErrorMessage = listResult.message
+                                    }
+                                }
+                                is NasCallResult.Err -> superuserErrorMessage = deleteResult.message
+                            }
+                            superuserBusy = false
+                        }
+                    }
+                ) { Text("Yes") }
+            },
+            dismissButton = {
+                Button(
+                    onClick = {
+                        deleteConfirmVisible = false
+                        pendingDeleteEvent = null
+                    }
+                ) { Text("No") }
+            }
+        )
+    }
+
+    if (showSuperuserLogin) {
+        AlertDialog(
+            onDismissRequest = { showSuperuserLogin = false },
+            title = { Text("Login superuser") },
+            text = {
+                Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = superuserUsername,
+                        onValueChange = { superuserUsername = it },
+                        label = { Text("Username") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = superuserPassword,
+                        onValueChange = { superuserPassword = it },
+                        label = { Text("Password") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !superuserBusy,
+                    onClick = {
+                        scope.launch {
+                            superuserBusy = true
+                            superuserErrorMessage = null
+                            superuserStatusMessage = null
+                            when (val loginResult = withContext(Dispatchers.IO) {
+                                apiClient.superuserLogin(superuserUsername, superuserPassword)
+                            }) {
+                                is NasCallResult.Ok -> {
+                                    superuserToken = loginResult.value.superuserToken
+                                    superuserLoggedInAs = loginResult.value.username
+                                    superuserStatusMessage = "Prijavljen: ${loginResult.value.username}"
+                                    when (val listResult = withContext(Dispatchers.IO) {
+                                        apiClient.listAdminEvents(superuserToken)
+                                    }) {
+                                        is NasCallResult.Ok -> adminEvents = listResult.value
+                                        is NasCallResult.Err -> superuserErrorMessage = listResult.message
+                                    }
+                                    showSuperuserLogin = false
+                                }
+                                is NasCallResult.Err -> superuserErrorMessage = loginResult.message
+                            }
+                            superuserBusy = false
+                        }
+                    }
+                ) { Text(if (superuserBusy) "Working..." else "Login") }
+            },
+            dismissButton = {
+                Button(onClick = { showSuperuserLogin = false }) { Text("Cancel") }
+            }
+        )
     }
 }

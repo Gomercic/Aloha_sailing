@@ -78,7 +78,7 @@ def init_db() -> None:
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     name VARCHAR(200) NOT NULL,
                     join_code VARCHAR(64) NOT NULL UNIQUE,
-                    organizer_device_id VARCHAR(128) NOT NULL,
+                    organizer_device_id VARCHAR(128) NOT NULL DEFAULT '',
                     organizer_code_hash VARCHAR(128) NULL,
                     organizer_name VARCHAR(200) NOT NULL DEFAULT '',
                     status VARCHAR(32) NOT NULL DEFAULT 'draft',
@@ -94,6 +94,14 @@ def init_db() -> None:
                 """
                 ALTER TABLE regatta_events
                 ADD COLUMN IF NOT EXISTS organizer_code_hash VARCHAR(128) NULL;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                ALTER TABLE regatta_events
+                ALTER COLUMN organizer_device_id SET DEFAULT '';
                 """
             )
         )
@@ -158,6 +166,26 @@ def init_db() -> None:
                 """
                 ALTER TABLE regatta_events
                 ADD COLUMN IF NOT EXISTS notice_board_updated_at TIMESTAMPTZ NULL;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS regatta_notice_posts (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    event_id UUID NOT NULL REFERENCES regatta_events(id) ON DELETE CASCADE,
+                    notice_text TEXT NOT NULL,
+                    published_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_regatta_notice_posts_event_published
+                ON regatta_notice_posts (event_id, published_at DESC);
                 """
             )
         )
@@ -574,6 +602,11 @@ class RegattaStateRequest(BaseModel):
     state: str
 
 
+class RegattaCrossingOverrideRequest(BaseModel):
+    organizer_token: str
+    status: str
+
+
 class RegattaGroupUpdateRequest(BaseModel):
     organizer_token: str
     group_code: str = ""
@@ -593,6 +626,10 @@ class RegattaSignalPointBody(BaseModel):
 
 
 class RegattaSignalBatchRequest(BaseModel):
+    points: list[RegattaSignalPointBody] = Field(default_factory=list)
+
+
+class RegattaTrackBatchRequest(BaseModel):
     points: list[RegattaSignalPointBody] = Field(default_factory=list)
 
 
@@ -799,6 +836,28 @@ def build_gates_payload(session, race_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def build_notice_posts_payload(session, event_id: str) -> list[dict[str, Any]]:
+    rows = session.execute(
+        text(
+            """
+            SELECT id, notice_text, published_at
+            FROM regatta_notice_posts
+            WHERE event_id = CAST(:event_id AS uuid)
+            ORDER BY published_at DESC, id DESC
+            """
+        ),
+        {"event_id": event_id},
+    ).fetchall()
+    return [
+        {
+            "id": str(row[0]),
+            "notice_text": row[1] or "",
+            "published_at": row[2].isoformat() if row[2] else "",
+        }
+        for row in rows
+    ]
+
+
 def save_start_snapshots(session, race_id: str) -> None:
     participants = session.execute(
         text(
@@ -968,138 +1027,6 @@ def signed_distance_to_gate_line_meters(
     return cross / ab_len
 
 
-def maybe_record_crossings(session, race_id: str, boat_id: str) -> None:
-    race_state = session.execute(
-        text("SELECT state FROM regatta_races WHERE id = CAST(:race_id AS uuid)"),
-        {"race_id": race_id},
-    ).fetchone()
-    if not race_state or race_state[0] != "started":
-        return
-    points = session.execute(
-        text(
-            """
-            SELECT latitude, longitude, epoch_ms
-            FROM regatta_signal_points
-            WHERE race_id = CAST(:race_id AS uuid)
-              AND boat_id = CAST(:boat_id AS uuid)
-            ORDER BY epoch_ms DESC
-            LIMIT 2
-            """
-        ),
-        {"race_id": race_id, "boat_id": boat_id},
-    ).fetchall()
-    if len(points) < 2:
-        return
-    current = points[0]
-    previous = points[1]
-    prev_point = (previous[0], previous[1])
-    curr_point = (current[0], current[1])
-    movement_meters = point_to_point_distance_meters(prev_point, curr_point)
-    if movement_meters < 3.0:
-        return
-    gates = session.execute(
-        text(
-            """
-            SELECT g.id, g.gate_order, g.gate_type, g.name,
-                   g.point_a_lat, g.point_a_lon, g.point_b_lat, g.point_b_lon,
-                   p.next_gate_order
-            FROM regatta_course_gates g
-            JOIN regatta_race_participations p
-              ON p.race_id = g.race_id
-             AND p.boat_id = CAST(:boat_id AS uuid)
-            WHERE g.race_id = CAST(:race_id AS uuid)
-              AND g.gate_order = p.next_gate_order
-            ORDER BY g.gate_order
-            """
-        ),
-        {"race_id": race_id, "boat_id": boat_id},
-    ).fetchall()
-    for gate in gates:
-        gate_id = gate[0]
-        gate_order = gate[1]
-        gate_type = gate[2]
-        gate_a = (gate[4], gate[5])
-        gate_b = (gate[6], gate[7])
-        prev_signed_m = signed_distance_to_gate_line_meters(prev_point, gate_a, gate_b)
-        curr_signed_m = signed_distance_to_gate_line_meters(curr_point, gate_a, gate_b)
-        deadband_m = 4.0
-        if abs(prev_signed_m) < deadband_m or abs(curr_signed_m) < deadband_m:
-            continue
-        if (prev_signed_m > 0) == (curr_signed_m > 0):
-            continue
-        if point_to_segment_distance_meters(curr_point, gate_a, gate_b) > 35.0 and point_to_segment_distance_meters(
-            prev_point, gate_a, gate_b
-        ) > 35.0:
-            continue
-        duplicate = session.execute(
-            text(
-                """
-                SELECT 1
-                FROM regatta_crossing_events
-                WHERE race_id = CAST(:race_id AS uuid)
-                  AND boat_id = CAST(:boat_id AS uuid)
-                  AND gate_id = :gate_id
-                  AND ABS(crossing_epoch_ms - :epoch_ms) <= 15000
-                LIMIT 1
-                """
-            ),
-            {
-                "race_id": race_id,
-                "boat_id": boat_id,
-                "gate_id": gate_id,
-                "epoch_ms": current[2],
-            },
-        ).fetchone()
-        if duplicate:
-            continue
-        ratio = abs(prev_signed_m) / (abs(prev_signed_m) + abs(curr_signed_m))
-        crossing_epoch_ms = int(previous[2] + ratio * (current[2] - previous[2]))
-        session.execute(
-            text(
-                """
-                INSERT INTO regatta_crossing_events (
-                    id, race_id, boat_id, gate_id, crossing_epoch_ms, source, status
-                )
-                VALUES (gen_random_uuid(), CAST(:race_id AS uuid), CAST(:boat_id AS uuid),
-                        :gate_id, :crossing_epoch_ms, 'auto', 'recorded')
-                """
-            ),
-            {
-                "race_id": race_id,
-                "boat_id": boat_id,
-                "gate_id": gate_id,
-                "crossing_epoch_ms": crossing_epoch_ms,
-            },
-        )
-        session.execute(
-            text(
-                """
-                UPDATE regatta_race_participations
-                SET next_gate_order = GREATEST(next_gate_order, :next_gate_order),
-                    finished_at_epoch_ms = CASE
-                        WHEN :gate_type = 'finish' THEN :crossing_epoch_ms
-                        ELSE finished_at_epoch_ms
-                    END,
-                    status = CASE
-                        WHEN :gate_type = 'finish' THEN 'finished'
-                        WHEN status = 'joined' THEN 'racing'
-                        ELSE status
-                    END
-                WHERE race_id = CAST(:race_id AS uuid)
-                  AND boat_id = CAST(:boat_id AS uuid)
-                """
-            ),
-            {
-                "race_id": race_id,
-                "boat_id": boat_id,
-                "next_gate_order": gate_order + 1,
-                "gate_type": gate_type,
-                "crossing_epoch_ms": crossing_epoch_ms,
-            },
-        )
-        break
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -1174,12 +1101,12 @@ def create_regatta_event(body: RegattaCreateRequest) -> dict[str, Any]:
             text(
                 """
                 INSERT INTO regatta_events (
-                    id, name, join_code, organizer_device_id, organizer_code_hash, organizer_name,
+                    id, name, join_code, organizer_code_hash, organizer_name,
                     start_date, end_date, race_end_time, regatta_length_nm,
                     is_public, max_boats, notice_board, notice_board_updated_at, status, active_race_id, created_at, updated_at
                 )
                 VALUES (
-                    :id, :name, :join_code, '', :organizer_code_hash, :organizer_name,
+                    :id, :name, :join_code, :organizer_code_hash, :organizer_name,
                     CAST(:start_date AS date), CAST(:end_date AS date),
                     :race_end_time, :regatta_length_nm,
                     :is_public, :max_boats, '', NULL, 'draft',
@@ -1346,6 +1273,91 @@ def admin_update_regatta_event(event_id: str, body: AdminEventUpdateRequest) -> 
             raise HTTPException(404, "Event not found")
         session.commit()
     return {"ok": True}
+
+
+@app.get("/v1/admin/regattas/events", dependencies=[Depends(require_api_key)])
+def admin_list_regatta_events(superuser_token: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        require_superuser(session, superuser_token)
+        rows = session.execute(
+            text(
+                """
+                SELECT e.id, e.name, e.join_code, e.organizer_code_hash, e.organizer_name, e.status, e.is_public,
+                       e.start_date, e.end_date, e.race_end_time, e.regatta_length_nm, e.updated_at,
+                       COUNT(DISTINCT b.id) AS boats_count,
+                       COUNT(DISTINCT r.id) AS races_count,
+                       COUNT(DISTINCT ce.id) AS points_count
+                FROM regatta_events e
+                LEFT JOIN regatta_boat_entries b ON b.event_id = e.id
+                LEFT JOIN regatta_races r ON r.event_id = e.id
+                LEFT JOIN regatta_crossing_events ce ON ce.race_id = r.id
+                GROUP BY
+                    e.id, e.name, e.join_code, e.organizer_code_hash, e.organizer_name, e.status, e.is_public,
+                    e.start_date, e.end_date, e.race_end_time, e.regatta_length_nm, e.updated_at, e.created_at
+                ORDER BY e.start_date DESC NULLS LAST, e.updated_at DESC, e.created_at DESC
+                LIMIT 500
+                """
+            )
+        ).fetchall()
+    return {
+        "ok": True,
+        "events": [
+            {
+                "event_id": str(row[0]),
+                "name": row[1],
+                "join_code": row[2],
+                "organizer_code_hash": row[3] or "",
+                "organizer_name": row[4],
+                "status": row[5],
+                "is_public": bool(row[6]),
+                "start_date": row[7].isoformat() if row[7] else "",
+                "end_date": row[8].isoformat() if row[8] else "",
+                "race_end_time": row[9] or "",
+                "regatta_length_nm": float(row[10] or 0.0),
+                "updated_at": row[11].isoformat() if row[11] else "",
+                "boats_count": int(row[12] or 0),
+                "races_count": int(row[13] or 0),
+                "points_count": int(row[14] or 0),
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.delete("/v1/admin/regattas/events/{event_id}", dependencies=[Depends(require_api_key)])
+def admin_delete_regatta_event(event_id: str, superuser_token: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        require_superuser(session, superuser_token)
+        deleted = session.execute(
+            text("DELETE FROM regatta_events WHERE id = CAST(:event_id AS uuid)"),
+            {"event_id": event_id},
+        )
+        if deleted.rowcount == 0:
+            raise HTTPException(404, "Event not found")
+        session.commit()
+    return {"ok": True}
+
+
+@app.post("/v1/admin/regattas/events/{event_id}/organizer-session", dependencies=[Depends(require_api_key)])
+def admin_create_organizer_session(event_id: str, superuser_token: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        require_superuser(session, superuser_token)
+        row = session.execute(
+            text(
+                """
+                SELECT id
+                FROM regatta_events
+                WHERE id = CAST(:event_id AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"event_id": event_id},
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Event not found")
+        organizer_token = create_organizer_session(session, row[0])
+        session.commit()
+    return {"ok": True, "event_id": str(row[0]), "organizer_token": organizer_token}
 
 
 @app.post("/v1/regattas/events/organizer-auth", dependencies=[Depends(require_api_key)])
@@ -1660,6 +1672,7 @@ def get_regatta_event_snapshot(event_id: str) -> dict[str, Any]:
                     "gates": build_gates_payload(session, str(race[0])),
                 }
             )
+        notice_posts = build_notice_posts_payload(session, event_id)
     return {
         "event_id": str(event[0]),
         "name": event[1],
@@ -1673,6 +1686,7 @@ def get_regatta_event_snapshot(event_id: str) -> dict[str, Any]:
         "max_boats": int(event[9] or 0),
         "notice_board": event[10] or "",
         "notice_board_updated_at": event[11].isoformat() if event[11] else "",
+        "notice_posts": notice_posts,
         "status": event[12],
         "active_race_id": str(event[13]) if event[13] else "",
         "boats": [
@@ -1784,8 +1798,23 @@ def update_regatta_boat_group(event_id: str, boat_id: str, body: RegattaGroupUpd
 
 @app.put("/v1/regattas/events/{event_id}/notice-board", dependencies=[Depends(require_api_key)])
 def update_regatta_notice_board(event_id: str, body: RegattaNoticeBoardUpdateRequest) -> dict[str, Any]:
+    notice_text = body.notice_text.strip()
+    if not notice_text:
+        raise HTTPException(400, "notice_text required")
     with SessionLocal() as session:
         require_event_organizer(session, event_id, body.organizer_token)
+        session.execute(
+            text(
+                """
+                INSERT INTO regatta_notice_posts (id, event_id, notice_text, published_at)
+                VALUES (gen_random_uuid(), CAST(:event_id AS uuid), :notice_text, NOW())
+                """
+            ),
+            {
+                "event_id": event_id,
+                "notice_text": notice_text,
+            },
+        )
         session.execute(
             text(
                 """
@@ -1798,7 +1827,7 @@ def update_regatta_notice_board(event_id: str, body: RegattaNoticeBoardUpdateReq
             ),
             {
                 "event_id": event_id,
-                "notice_board": body.notice_text.strip(),
+                "notice_board": notice_text,
             },
         )
         session.commit()
@@ -1897,9 +1926,9 @@ def update_regatta_course(race_id: str, body: RegattaCourseUpdateRequest) -> dic
         ).fetchone()
         countdown_target = race_row[0] if race_row else None
         if countdown_target is not None:
-            lock_deadline_ms = int(countdown_target) - 4 * 60 * 1000
-            if int(datetime.now(timezone.utc).timestamp() * 1000) >= lock_deadline_ms:
-                raise HTTPException(409, "Course editing locked inside T-4 minutes")
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            if now_ms >= int(countdown_target) - 5 * 60 * 1000:
+                raise HTTPException(409, "Course editing locked from T-5 minutes onwards")
         session.execute(
             text("DELETE FROM regatta_course_gates WHERE race_id = CAST(:race_id AS uuid)"),
             {"race_id": race_id},
@@ -1950,18 +1979,10 @@ def update_regatta_countdown(race_id: str, body: RegattaCountdownRequest) -> dic
         ).fetchone()
         if not row:
             raise HTTPException(404, "Race not found")
-        existing_target = row[0]
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         requested = int(body.countdown_target_epoch_ms)
-        if existing_target is None:
-            if requested < now_ms + 5 * 60 * 1000:
-                raise HTTPException(400, "Start time must be at least 5 minutes from now")
-        else:
-            lock_deadline_ms = int(existing_target) - 4 * 60 * 1000
-            if now_ms >= lock_deadline_ms:
-                raise HTTPException(409, "Start time correction locked inside T-4 minutes")
-            if abs(requested - int(existing_target)) > 15_000:
-                raise HTTPException(400, "Start time correction may be at most ±15 seconds")
+        if requested < now_ms + 5 * 60 * 1000:
+            raise HTTPException(400, "Start time must be at least 5 minutes from now")
         session.execute(
             text(
                 """
@@ -2150,7 +2171,7 @@ def post_regatta_start_snapshot(
 
 
 @app.post("/v1/regattas/races/{race_id}/boats/{boat_id}/track-batch", dependencies=[Depends(require_api_key)])
-def post_regatta_track_batch(race_id: str, boat_id: str, body: RegattaSignalBatchRequest) -> dict[str, Any]:
+def post_regatta_track_batch(race_id: str, boat_id: str, body: RegattaTrackBatchRequest) -> dict[str, Any]:
     if not body.points:
         return {"ok": True, "stored": 0}
     with SessionLocal() as session:
@@ -2436,7 +2457,11 @@ def get_regatta_live_snapshot(race_id: str) -> dict[str, Any]:
 
 
 @app.post("/v1/regattas/races/{race_id}/crossings/{crossing_id}/override", dependencies=[Depends(require_api_key)])
-def override_regatta_crossing(race_id: str, crossing_id: str, body: RegattaStateRequest) -> dict[str, Any]:
+def override_regatta_crossing(
+    race_id: str,
+    crossing_id: str,
+    body: RegattaCrossingOverrideRequest,
+) -> dict[str, Any]:
     with SessionLocal() as session:
         event_id = get_race_event_id(session, race_id)
         require_event_organizer(session, str(event_id), body.organizer_token)
@@ -2450,7 +2475,7 @@ def override_regatta_crossing(race_id: str, crossing_id: str, body: RegattaState
                   AND race_id = CAST(:race_id AS uuid)
                 """
             ),
-            {"status": body.state.strip().lower(), "crossing_id": crossing_id, "race_id": race_id},
+            {"status": body.status.strip().lower(), "crossing_id": crossing_id, "race_id": race_id},
         )
         session.commit()
     return {"ok": True}
