@@ -3,4 +3,7 @@
     <files-path
         name="gpx_files"
         path="gpx/" />
+    <cache-path
+        name="regatta_exports"
+        path="regatta_exports/" />
 </paths>

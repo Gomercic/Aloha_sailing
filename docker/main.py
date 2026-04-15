@@ -308,26 +308,14 @@ def init_db() -> None:
         conn.execute(
             text(
                 """
-                DELETE FROM regatta_boat_entries
-                WHERE id IN (
-                    SELECT id FROM (
-                        SELECT id,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY event_id, device_id
-                                   ORDER BY created_at DESC, id DESC
-                               ) AS rn
-                        FROM regatta_boat_entries
-                        WHERE device_id IS NOT NULL AND device_id <> ''
-                    ) dedupe
-                    WHERE rn > 1
-                );
+                DROP INDEX IF EXISTS idx_regatta_boat_entries_event_device;
                 """
             )
         )
         conn.execute(
             text(
                 """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_regatta_boat_entries_event_device
+                CREATE INDEX IF NOT EXISTS idx_regatta_boat_entries_event_device
                 ON regatta_boat_entries (event_id, device_id)
                 WHERE device_id IS NOT NULL AND device_id <> '';
                 """
@@ -1579,6 +1567,7 @@ def get_regatta_join_prefill(body: RegattaJoinPrefillRequest) -> dict[str, Any]:
                 FROM regatta_boat_entries
                 WHERE event_id = :event_id
                   AND device_id = :device_id
+                ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """
             ),
@@ -1632,13 +1621,15 @@ def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
                 SELECT id, boat_code
                 FROM regatta_boat_entries
                 WHERE event_id = :event_id
-                  AND device_id = :device_id
+                  AND lower(trim(boat_name)) = lower(trim(:boat_name))
+                  AND lower(trim(COALESCE(skipper_name, ''))) = lower(trim(:skipper_name))
                 LIMIT 1
                 """
             ),
             {
                 "event_id": event_id,
-                "device_id": device_id,
+                "boat_name": boat_name,
+                "skipper_name": skipper_name,
             },
         ).fetchone()
         if not existing:

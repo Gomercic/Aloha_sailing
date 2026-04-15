@@ -38,6 +38,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -1189,17 +1190,43 @@ fun RegattaScreen(
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = {
-                                val combinedCsv = buildCombinedResultsCsv(
-                                    raceRowsByGroup = raceRowsByGroup,
-                                    regattaRowsByGroup = regattaRowsByGroup,
-                                    selectedRaceIds = selectedRaceIds
-                                )
+                                val combinedCsv = runCatching {
+                                    buildCombinedResultsCsv(
+                                        regattaName = selectedEvent.name,
+                                        regattaStartDate = selectedEvent.startDate,
+                                        regattaEndDate = selectedEvent.endDate,
+                                        raceName = selectedRace.name,
+                                        raceDate = selectedRace.raceDate,
+                                        raceStartTime = selectedRace.startTime,
+                                        raceEndTime = selectedRace.endTime,
+                                        raceRowsByGroup = raceRowsByGroup,
+                                        regattaRowsByGroup = regattaRowsByGroup,
+                                        selectedRaceIds = selectedRaceIds
+                                    )
+                                }.getOrElse {
+                                    buildCombinedResultsCsvFallback(
+                                        regattaName = selectedEvent.name,
+                                        regattaStartDate = selectedEvent.startDate,
+                                        regattaEndDate = selectedEvent.endDate,
+                                        raceName = selectedRace.name,
+                                        raceDate = selectedRace.raceDate,
+                                        raceStartTime = selectedRace.startTime,
+                                        raceEndTime = selectedRace.endTime,
+                                        raceRowsByGroup = raceRowsByGroup,
+                                        regattaRowsByGroup = regattaRowsByGroup,
+                                        selectedRaceIds = selectedRaceIds
+                                    )
+                                }
                                 val file = writeCsvFile(
                                     context = context,
                                     fileName = "results_${sanitizeFileName(selectedEvent.name)}_${sanitizeFileName(selectedRace.name)}.csv",
                                     csvContent = combinedCsv
                                 )
-                                shareCsvFile(context, file, "Share results CSV")
+                                runCatching {
+                                    shareCsvFile(context, file, "Share results CSV")
+                                }.onFailure {
+                                    errorMessage = "CSV export failed."
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
                         ) { Text("Share CSV (all tables)") }
@@ -1259,50 +1286,62 @@ fun RegattaScreen(
                 if (selectedBoatId.isNotBlank() && selectedBoatId != historyMapSelectedBoatId) {
                     historyMapSelectedBoatId = selectedBoatId
                 }
-                LaunchedEffect(selectedRace?.id, selectedBoatId) {
+                LaunchedEffect(mode, selectedRace?.id, selectedBoatId) {
                     if (selectedRace == null || selectedBoatId.isBlank()) {
                         historyMapBoatTrack = emptyList()
                         return@LaunchedEffect
                     }
-                    when (val trackResult = withContext(Dispatchers.IO) {
-                        apiClient.getBoatTrack(selectedRace.id, selectedBoatId)
-                    }) {
-                        is NasCallResult.Ok -> historyMapBoatTrack = trackResult.value
-                        is NasCallResult.Err -> {
-                            historyMapBoatTrack = emptyList()
-                            errorMessage = trackResult.message
+                    while (mode == "history_race_map") {
+                        when (val trackResult = withContext(Dispatchers.IO) {
+                            apiClient.getBoatTrack(selectedRace.id, selectedBoatId)
+                        }) {
+                            is NasCallResult.Ok -> historyMapBoatTrack = trackResult.value
+                            is NasCallResult.Err -> {
+                                historyMapBoatTrack = emptyList()
+                                errorMessage = trackResult.message
+                            }
                         }
+                        delay(5_000L)
                     }
                 }
                 RegattaSection(title = "Map", cardColor = cardColor) {
                     if (selectedRace == null || raceLive == null) {
                         Text("Map data not available.", color = muted)
                     } else {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = { mode = "history_race" },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
-                            ) { Text("Back to results") }
-                            Button(
+                        Button(
+                            onClick = { mode = "history_race" },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                        ) { Text("Back to results") }
+                        Spacer(Modifier.height(8.dp))
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
                                 onClick = { historyMapBoatMenuExpanded = true },
-                                colors = ButtonDefaults.buttonColors(containerColor = actionBlue)
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                val label = participants.firstOrNull { it.boatId == selectedBoatId }?.boatName
+                                val selectedLabel = participants.firstOrNull { it.boatId == selectedBoatId }?.boatName
                                     ?: "Select boat"
-                                Text(label)
+                                Text(selectedLabel)
                             }
                             DropdownMenu(
                                 expanded = historyMapBoatMenuExpanded,
                                 onDismissRequest = { historyMapBoatMenuExpanded = false }
                             ) {
                                 participants.forEach { participant ->
+                                    val hasRecentSync = participant.lastSignalEpochMs?.let { lastSignal ->
+                                        (System.currentTimeMillis() - lastSignal) <= 90_000L
+                                    } == true
+                                    val statusLabel = if (hasRecentSync) "Sync ON" else "Sync OFF"
+                                    val statusColor = if (hasRecentSync) Color(0xFF43A047) else Color(0xFFE53935)
                                     DropdownMenuItem(
-                                        text = { Text(participant.boatName) },
+                                        text = {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text("●", color = statusColor, fontSize = 12.sp)
+                                                Text("${participant.boatName} · $statusLabel")
+                                            }
+                                        },
                                         onClick = {
                                             historyMapSelectedBoatId = participant.boatId
                                             historyMapBoatMenuExpanded = false
@@ -1314,6 +1353,7 @@ fun RegattaScreen(
                         Spacer(Modifier.height(8.dp))
                         HistoryResultsMapView(
                             selectedRaceLive = raceLive,
+                            participants = participants,
                             selectedBoatId = selectedBoatId,
                             selectedBoatTrack = historyMapBoatTrack
                         )
@@ -2036,9 +2076,6 @@ fun RegattaScreen(
                         Button(
                             enabled = !isBusy,
                             onClick = {
-                                if (tryResumeJoinWithoutApi(openRaceStartLine = false)) {
-                                    return@Button
-                                }
                                 isBusy = true
                                 errorMessage = null
                                 statusMessage = null
@@ -2100,9 +2137,6 @@ fun RegattaScreen(
                         Button(
                             enabled = !isBusy,
                             onClick = {
-                                if (tryResumeJoinWithoutApi(openRaceStartLine = true)) {
-                                    return@Button
-                                }
                                 isBusy = true
                                 errorMessage = null
                                 statusMessage = null
@@ -2923,31 +2957,281 @@ fun RegattaScreen(
             }
 
             if (mode == "organizer_results") {
-                val event = eventSnapshot
-                RegattaSection(title = "", cardColor = cardColor) {
-                    if (event == null || liveSnapshot == null) {
+                val selectedEvent = eventSnapshot
+                val selectedRace = selectedEvent?.races
+                    ?.firstOrNull { it.id == liveSnapshot?.raceId }
+                    ?: selectedEvent?.races?.firstOrNull { it.id == joinedRaceId }
+                    ?: selectedEvent?.races?.firstOrNull { it.id == selectedEvent.activeRaceId }
+                    ?: selectedEvent?.races?.firstOrNull()
+                val raceLive = liveSnapshot
+                RegattaSection(title = "Results", cardColor = cardColor) {
+                    if (selectedEvent == null || selectedRace == null || raceLive == null) {
                         Text("Results not available.", color = muted)
                     } else {
-                        val rows = computeRaceScoreRows(liveSnapshot!!, event.boats)
-                        if (rows.isEmpty()) {
-                            Text("Results not available.", color = muted)
+                        val raceRows = computeRaceScoreRows(raceLive, selectedEvent.boats)
+                        val (gateTimelineHeaders, gateTimelineRows) = computeRaceGateTimelineRows(
+                            live = raceLive,
+                            boats = selectedEvent.boats
+                        )
+                        val gateTimelineRowsByGroup = gateTimelineRows
+                            .groupBy { normalizeGroupLabel(it.groupCode) }
+                            .toSortedMap()
+                        val raceRowsByGroup = raceRows
+                            .groupBy { normalizeGroupLabel(it.groupCode) }
+                            .toSortedMap()
+                        val selectedRaceIds = selectedEvent.races
+                            .takeWhile { it.id != selectedRace.id }
+                            .map { it.id } + selectedRace.id
+                        val regattaRows = computeEventScoreTable(
+                            event = selectedEvent,
+                            raceSnapshots = listOf(raceLive),
+                            raceIds = selectedRaceIds
+                        )
+                        val regattaRowsByGroup = regattaRows
+                            .groupBy { normalizeGroupLabel(it.groupCode) }
+                            .toSortedMap()
+                        Text(
+                            selectedRace.name.ifBlank { "Race ${selectedRace.sequenceNumber}" },
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Start: ${selectedRace.countdownTargetEpochMs?.let(::formatEpoch) ?: "--"}",
+                            color = Color(0xFFCFD8DC),
+                            fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Text("Gate crossings", color = Color.White, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        if (gateTimelineHeaders.isEmpty()) {
+                            Text("No gates defined for crossings.", color = muted)
+                        } else if (gateTimelineRows.isEmpty()) {
+                            Text("No boats to display crossings.", color = muted)
                         } else {
-                            rows.forEachIndexed { index, row ->
-                                Card(modifier = Modifier.fillMaxWidth()) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0xFF171717))
-                                            .padding(10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text("${index + 1}. ${row.boatName}", color = Color.White)
-                                        Text(row.status, color = Color(0xFFCFD8DC))
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .horizontalScroll(rememberScrollState())
+                                        .background(Color(0xFF263238))
+                                        .padding(8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text("Boat", color = Color.White, fontSize = 11.sp, modifier = Modifier.width(130.dp))
+                                    Text("Group", color = Color.White, fontSize = 11.sp, modifier = Modifier.width(80.dp))
+                                    gateTimelineHeaders.forEach { gateHeader ->
+                                        Text(gateHeader, color = Color.White, fontSize = 11.sp, modifier = Modifier.width(84.dp))
                                     }
+                                    Text("Corrected", color = Color.White, fontSize = 11.sp, modifier = Modifier.width(90.dp))
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            gateTimelineRowsByGroup.forEach { (groupName, rowsInGroup) ->
+                                Text("Group: $groupName", color = Color(0xFFFFF59D), fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(4.dp))
+                                rowsInGroup.forEach { row ->
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .horizontalScroll(rememberScrollState())
+                                                .background(Color(0xFF171717))
+                                                .padding(10.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(row.boatName, color = Color.White, fontSize = 11.sp, modifier = Modifier.width(130.dp))
+                                            Text(groupName, color = Color.White, fontSize = 11.sp, modifier = Modifier.width(80.dp))
+                                            row.gateTimes.forEach { crossingEpoch ->
+                                                Text(
+                                                    crossingEpoch?.let(::formatEpochTime) ?: "--",
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    modifier = Modifier.width(84.dp)
+                                                )
+                                            }
+                                            Text(
+                                                row.correctedElapsedMs?.let(::formatDurationFromMillis) ?: "--",
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                modifier = Modifier.width(90.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
                                 }
                                 Spacer(Modifier.height(6.dp))
                             }
                         }
+                        Spacer(Modifier.height(14.dp))
+                        Text("Race results", color = Color.White, fontWeight = FontWeight.Bold)
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF263238))
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Boat", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(2f))
+                                Text("Group", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Elapsed", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Penalty", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Corr.", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Points", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Pos.", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(0.7f))
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        if (raceRows.isEmpty()) {
+                            Text("No race data.", color = muted)
+                        } else {
+                            raceRowsByGroup.forEach { (groupName, rowsInGroup) ->
+                                Text("Group: $groupName", color = Color(0xFFFFF59D), fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(4.dp))
+                                val orderedGroup = rowsInGroup.sortedWith(
+                                    compareBy<RaceScoreRow>(
+                                        { it.racePoints },
+                                        { it.correctedElapsedMs ?: Long.MAX_VALUE },
+                                        { it.boatName.lowercase(Locale.US) }
+                                    )
+                                )
+                                orderedGroup.forEachIndexed { groupIndex, row ->
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(Color(0xFF171717))
+                                                .padding(10.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(row.boatName, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(2f))
+                                                Text(groupName, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                                Text(
+                                                    if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.realElapsedMs?.let(::formatDurationFromMillis) ?: "--",
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Text(String.format(Locale.US, "%.1f%%", row.penaltyPercent), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                                Text(
+                                                    if (row.status.equals("DNF", ignoreCase = true)) "DNF" else row.correctedElapsedMs?.let(::formatDurationFromMillis) ?: "--",
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Text(String.format(Locale.US, "%.2f", row.racePoints), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                                Text((groupIndex + 1).toString(), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(0.7f))
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        Text("Regatta standings", color = Color.White, fontWeight = FontWeight.Bold)
+                        val raceHeader = selectedRaceIds.indices.joinToString(" | ") { "R${it + 1}" }
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF263238))
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Boat", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(2f))
+                                Text("Group", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text(raceHeader, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(2f))
+                                Text("Total", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Pos.", color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(0.7f))
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        if (regattaRows.isEmpty()) {
+                            Text("No data for regatta standings.", color = muted)
+                        } else {
+                            regattaRowsByGroup.forEach { (groupName, rowsInGroup) ->
+                                Text("Group: $groupName", color = Color(0xFFFFF59D), fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(4.dp))
+                                val orderedGroup = rowsInGroup.sortedWith(
+                                    compareBy<EventScoreRow>(
+                                        { it.totalPoints },
+                                        { it.boatName.lowercase(Locale.US) }
+                                    )
+                                )
+                                orderedGroup.forEachIndexed { groupIndex, row ->
+                                    val raceColumns = row.racePoints.mapIndexed { index, points ->
+                                        "R${index + 1}:${points?.let { String.format(Locale.US, "%.2f", it) } ?: "-"}"
+                                    }.joinToString(" | ")
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(Color(0xFF171717))
+                                                .padding(10.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(row.boatName, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(2f))
+                                                Text(groupName, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                                Text(raceColumns, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(2f))
+                                                Text(String.format(Locale.US, "%.2f", row.totalPoints), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                                Text((groupIndex + 1).toString(), color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(0.7f))
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                val combinedCsv = runCatching {
+                                    buildCombinedResultsCsv(
+                                        regattaName = selectedEvent.name,
+                                        regattaStartDate = selectedEvent.startDate,
+                                        regattaEndDate = selectedEvent.endDate,
+                                        raceName = selectedRace.name,
+                                        raceDate = selectedRace.raceDate,
+                                        raceStartTime = selectedRace.startTime,
+                                        raceEndTime = selectedRace.endTime,
+                                        raceRowsByGroup = raceRowsByGroup,
+                                        regattaRowsByGroup = regattaRowsByGroup,
+                                        selectedRaceIds = selectedRaceIds
+                                    )
+                                }.getOrElse {
+                                    buildCombinedResultsCsvFallback(
+                                        regattaName = selectedEvent.name,
+                                        regattaStartDate = selectedEvent.startDate,
+                                        regattaEndDate = selectedEvent.endDate,
+                                        raceName = selectedRace.name,
+                                        raceDate = selectedRace.raceDate,
+                                        raceStartTime = selectedRace.startTime,
+                                        raceEndTime = selectedRace.endTime,
+                                        raceRowsByGroup = raceRowsByGroup,
+                                        regattaRowsByGroup = regattaRowsByGroup,
+                                        selectedRaceIds = selectedRaceIds
+                                    )
+                                }
+                                val file = writeCsvFile(
+                                    context = context,
+                                    fileName = "results_${sanitizeFileName(selectedEvent.name)}_${sanitizeFileName(selectedRace.name)}.csv",
+                                    csvContent = combinedCsv
+                                )
+                                runCatching {
+                                    shareCsvFile(context, file, "Share results CSV")
+                                }.onFailure {
+                                    errorMessage = "CSV export failed."
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
+                        ) { Text("Share CSV (all tables)") }
                     }
                 }
             }
@@ -3471,13 +3755,15 @@ private fun OrganizerGateMap(
 @Composable
 private fun HistoryResultsMapView(
     selectedRaceLive: RegattaLiveSnapshot,
+    participants: List<RegattaParticipantLive>,
     selectedBoatId: String,
     selectedBoatTrack: List<RegattaBoatTrackPoint>
 ) {
     val raceGates = selectedRaceLive.gates
-    val t0Points = selectedRaceLive.participants.filter {
-        it.startSnapshotLatitude != null && it.startSnapshotLongitude != null
+    val visibleParticipants = participants.filter {
+        it.lastLatitude != null && it.lastLongitude != null
     }
+    val hasMapData = raceGates.isNotEmpty() || visibleParticipants.isNotEmpty() || selectedBoatTrack.isNotEmpty()
     AndroidView(
         modifier = Modifier
             .fillMaxWidth()
@@ -3531,16 +3817,26 @@ private fun HistoryResultsMapView(
                 )
             }
 
-            t0Points.forEach { participant ->
-                val lat = participant.startSnapshotLatitude ?: return@forEach
-                val lon = participant.startSnapshotLongitude ?: return@forEach
+            var selectedPoint: GeoPoint? = null
+            visibleParticipants.forEach { participant ->
+                val lat = participant.lastLatitude ?: return@forEach
+                val lon = participant.lastLongitude ?: return@forEach
                 val point = GeoPoint(lat, lon)
                 boundsPoints += point
+                val selected = participant.boatId == selectedBoatId
+                if (selected) selectedPoint = point
                 mapView.overlays.add(
                     Marker(mapView).apply {
                         position = point
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                        title = "${participant.boatName} T0"
+                        icon = createGateBuoyDrawable(
+                            color = if (selected) android.graphics.Color.YELLOW else android.graphics.Color.CYAN,
+                            sizePx = if (selected) 26 else 20
+                        )
+                        title = participant.boatName
+                        subDescription = participant.lastSpeedKnots?.let {
+                            String.format(Locale.US, "%.1f kn", it)
+                        } ?: "-- kn"
                     }
                 )
             }
@@ -3568,6 +3864,7 @@ private fun HistoryResultsMapView(
                         Marker(mapView).apply {
                             position = point
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            icon = createGateBuoyDrawable(android.graphics.Color.YELLOW, sizePx = 28)
                             title = participant.boatName
                         }
                     )
@@ -3575,6 +3872,10 @@ private fun HistoryResultsMapView(
             }
 
             when {
+                selectedPoint != null -> {
+                    mapView.controller.setCenter(selectedPoint)
+                    mapView.controller.setZoom(18.0)
+                }
                 boundsPoints.size >= 2 -> mapView.zoomToBoundingBox(BoundingBox.fromGeoPointsSafe(boundsPoints), true, 48)
                 boundsPoints.size == 1 -> {
                     mapView.controller.setCenter(boundsPoints.first())
@@ -3584,6 +3885,9 @@ private fun HistoryResultsMapView(
             mapView.invalidate()
         }
     )
+    if (!hasMapData) {
+        Text("No map data yet", color = Color(0xFFB0BEC5), fontWeight = FontWeight.SemiBold)
+    }
 }
 
 private fun createGateBuoyDrawable(color: Int, sizePx: Int = 22): GradientDrawable {
@@ -4014,11 +4318,37 @@ private fun buildEventScoringCsv(
 }
 
 private fun buildCombinedResultsCsv(
+    regattaName: String,
+    regattaStartDate: String?,
+    regattaEndDate: String?,
+    raceName: String,
+    raceDate: String?,
+    raceStartTime: String?,
+    raceEndTime: String?,
     raceRowsByGroup: Map<String, List<RaceScoreRow>>,
     regattaRowsByGroup: Map<String, List<EventScoreRow>>,
     selectedRaceIds: List<String>
 ): String {
     val lines = mutableListOf<String>()
+    lines += listOf(
+        csvCell("regatta_name"),
+        csvCell(regattaName.ifBlank { "--" }),
+        csvCell("from"),
+        csvCell(regattaStartDate?.ifBlank { "--" } ?: "--"),
+        csvCell("to"),
+        csvCell(regattaEndDate?.ifBlank { "--" } ?: "--")
+    ).joinToString(",")
+    lines += listOf(
+        csvCell("race_name"),
+        csvCell(raceName.ifBlank { "--" }),
+        csvCell("race_date"),
+        csvCell(raceDate?.ifBlank { "--" } ?: "--"),
+        csvCell("start"),
+        csvCell(raceStartTime?.ifBlank { "--" } ?: "--"),
+        csvCell("finish"),
+        csvCell(raceEndTime?.ifBlank { "--" } ?: "--")
+    ).joinToString(",")
+    lines += ""
     lines += "RACE RESULTS"
     lines += "group,group_rank,boat_name,elapsed_time,penalty_percent,corrected_time,points"
     raceRowsByGroup.forEach { (groupName, rows) ->
@@ -4061,6 +4391,74 @@ private fun buildCombinedResultsCsv(
     return lines.joinToString("\n")
 }
 
+private fun buildCombinedResultsCsvFallback(
+    regattaName: String,
+    regattaStartDate: String?,
+    regattaEndDate: String?,
+    raceName: String,
+    raceDate: String?,
+    raceStartTime: String?,
+    raceEndTime: String?,
+    raceRowsByGroup: Map<String, List<RaceScoreRow>>,
+    regattaRowsByGroup: Map<String, List<EventScoreRow>>,
+    selectedRaceIds: List<String>
+): String {
+    val lines = mutableListOf<String>()
+    lines += listOf(
+        csvCell("regatta_name"),
+        csvCell(regattaName.ifBlank { "--" }),
+        csvCell("from"),
+        csvCell(regattaStartDate?.ifBlank { "--" } ?: "--"),
+        csvCell("to"),
+        csvCell(regattaEndDate?.ifBlank { "--" } ?: "--")
+    ).joinToString(",")
+    lines += listOf(
+        csvCell("race_name"),
+        csvCell(raceName.ifBlank { "--" }),
+        csvCell("race_date"),
+        csvCell(raceDate?.ifBlank { "--" } ?: "--"),
+        csvCell("start"),
+        csvCell(raceStartTime?.ifBlank { "--" } ?: "--"),
+        csvCell("finish"),
+        csvCell(raceEndTime?.ifBlank { "--" } ?: "--")
+    ).joinToString(",")
+    lines += ""
+    lines += "RACE RESULTS"
+    lines += "group,group_rank,boat_name,elapsed_time,penalty_percent,corrected_time,points"
+    raceRowsByGroup.forEach { (groupName, rows) ->
+        val ordered = rows.sortedBy { it.boatName.lowercase(Locale.US) }
+        ordered.forEachIndexed { index, row ->
+            lines += listOf(
+                csvCell(groupName),
+                (index + 1).toString(),
+                csvCell(row.boatName),
+                "",
+                "",
+                "",
+                ""
+            ).joinToString(",")
+        }
+    }
+    lines += ""
+    lines += "REGATTA STANDINGS"
+    val raceHeaders = selectedRaceIds.indices.map { "R${it + 1}" }
+    lines += (listOf("group", "group_rank", "boat_name") + raceHeaders + listOf("total_points")).joinToString(",")
+    regattaRowsByGroup.forEach { (groupName, rows) ->
+        val ordered = rows.sortedBy { it.boatName.lowercase(Locale.US) }
+        ordered.forEachIndexed { index, row ->
+            lines += (
+                listOf(
+                    csvCell(groupName),
+                    (index + 1).toString(),
+                    csvCell(row.boatName)
+                ) + selectedRaceIds.map { "" } +
+                    listOf("")
+                ).joinToString(",")
+        }
+    }
+    return lines.joinToString("\n")
+}
+
 private fun writeCsvFile(
     context: Context,
     fileName: String,
@@ -4074,17 +4472,19 @@ private fun writeCsvFile(
 
 private fun shareCsvFile(context: Context, csvFile: File, title: String) {
     val authority = "${context.packageName}.fileprovider"
-    val uri = runCatching {
-        FileProvider.getUriForFile(context, authority, csvFile)
-    }.getOrElse {
-        Uri.fromFile(csvFile)
+    runCatching {
+        val uri = runCatching {
+            FileProvider.getUriForFile(context, authority, csvFile)
+        }.getOrElse {
+            Uri.fromFile(csvFile)
+        }
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, title))
     }
-    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-        type = "text/csv"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    context.startActivity(Intent.createChooser(shareIntent, title))
 }
 
 private fun csvCell(value: String): String {

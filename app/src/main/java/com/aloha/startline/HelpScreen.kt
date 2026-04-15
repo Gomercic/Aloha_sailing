@@ -377,8 +377,11 @@ fun HelpScreen(
                                 color = Color(0xFFCFD8DC),
                                 fontSize = 12.sp
                             )
+                            val organizerAdminCode = event.organizerCode.ifBlank {
+                                event.organizerCodeHash.ifBlank { "--" }
+                            }
                             Text(
-                                text = "Organizer hash: ${event.organizerCodeHash.ifBlank { "--" }}",
+                                text = "Organizer admin code: $organizerAdminCode",
                                 color = Color(0xFFCFD8DC),
                                 fontSize = 12.sp
                             )

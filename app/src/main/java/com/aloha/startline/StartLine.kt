@@ -327,58 +327,54 @@ fun StartLine(
 
             Spacer(modifier = Modifier.height(CompactGapXs))
 
-            // Speed row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SmallButton(
-                    text = "−",
-                    onClick = {
-                        onDoubleClickAction?.invoke("speed_minus", onSpeedMinus) ?: onSpeedMinus()
-                    }
-                )
-
-                Spacer(modifier = Modifier.width(CompactGapXs))
-
-                Text(
-                    text = speedDisplayText,
-                    color = secondaryTextColor,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.pointerInput(onDoubleClickAction) {
-                        detectTapGestures(
-                            onTap = {
-                                onDoubleClickAction?.invoke("speed_from_gps", onSpeedFromGps)
-                                    ?: onSpeedFromGps()
-                            }
-                        )
-                    }
-                )
-
-                Spacer(modifier = Modifier.width(CompactGapXs))
-
-                SmallButton(
-                    text = "+",
-                    onClick = {
-                        onDoubleClickAction?.invoke("speed_plus", onSpeedPlus) ?: onSpeedPlus()
-                    }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(CompactGapM))
-
             if (!showBuoyControls) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.Top
                 ) {
-                    Text(
-                        text = "expected boat speed",
-                        color = secondaryTextColor,
-                        fontSize = 12.sp
-                    )
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            SmallButton(
+                                text = "−",
+                                onClick = {
+                                    onDoubleClickAction?.invoke("speed_minus", onSpeedMinus) ?: onSpeedMinus()
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.width(CompactGapXs))
+
+                            Text(
+                                text = speedDisplayText,
+                                color = secondaryTextColor,
+                                fontSize = 28.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.pointerInput(onDoubleClickAction) {
+                                    detectTapGestures(
+                                        onTap = {
+                                            onDoubleClickAction?.invoke("speed_from_gps", onSpeedFromGps)
+                                                ?: onSpeedFromGps()
+                                        }
+                                    )
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.width(CompactGapXs))
+
+                            SmallButton(
+                                text = "+",
+                                onClick = {
+                                    onDoubleClickAction?.invoke("speed_plus", onSpeedPlus) ?: onSpeedPlus()
+                                }
+                            )
+                        }
+                        Text(
+                            text = "expected boat speed",
+                            color = secondaryTextColor,
+                            fontSize = 12.sp
+                        )
+                    }
+
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
                             text = lineLengthDisplayText,
@@ -398,8 +394,48 @@ fun StartLine(
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(0.dp))
+            } else {
+                // Speed row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SmallButton(
+                        text = "−",
+                        onClick = {
+                            onDoubleClickAction?.invoke("speed_minus", onSpeedMinus) ?: onSpeedMinus()
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.width(CompactGapXs))
+
+                    Text(
+                        text = speedDisplayText,
+                        color = secondaryTextColor,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.pointerInput(onDoubleClickAction) {
+                            detectTapGestures(
+                                onTap = {
+                                    onDoubleClickAction?.invoke("speed_from_gps", onSpeedFromGps)
+                                        ?: onSpeedFromGps()
+                                }
+                            )
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.width(CompactGapXs))
+
+                    SmallButton(
+                        text = "+",
+                        onClick = {
+                            onDoubleClickAction?.invoke("speed_plus", onSpeedPlus) ?: onSpeedPlus()
+                        }
+                    )
+                }
             }
+
+            Spacer(modifier = Modifier.height(CompactGapM))
 
             // Set L / center / Set R
             Row(
