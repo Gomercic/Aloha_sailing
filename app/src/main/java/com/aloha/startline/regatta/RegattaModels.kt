@@ -32,6 +32,7 @@ data class RegattaRaceSummary(
 data class RegattaBoatSummary(
     val id: String,
     val deviceId: String?,
+    val boatCode: String?,
     val boatName: String,
     val skipperName: String,
     val clubName: String,
@@ -93,8 +94,6 @@ data class RegattaEventSnapshot(
     val organizerName: String,
     val startDate: String?,
     val endDate: String?,
-    val raceEndTime: String?,
-    val regattaLengthNm: Double,
     val isPublic: Boolean,
     val maxBoats: Int,
     val noticeBoard: String,
@@ -126,8 +125,6 @@ data class RegattaDraft(
     val organizerCode: String,
     val startDate: String,
     val endDate: String,
-    val raceEndTime: String,
-    val regattaLengthNm: Double,
     val isPublic: Boolean,
     val maxBoats: Int
 )

@@ -70,6 +70,8 @@ private val CompactSmallButtonPadding = PaddingValues(horizontal = 2.dp, vertica
 @Composable
 fun StartLine(
     headerContent: (@Composable () -> Unit)? = null,
+    applyStatusBarTopPadding: Boolean = true,
+    highContrastMode: Boolean = false,
     countdownDisplayText: String = "10:00",
     /** Kad je true, brojke štoperice su nakon starta (vrijeme u plus) – svijetlo plave. */
     countdownOvertimeActive: Boolean = false,
@@ -120,6 +122,9 @@ fun StartLine(
             ?.top ?: 0) / 2f
     }
     val halfStatusBarTopPadding = LocalDensity.current.run { halfStatusBarTopPaddingPx.toDp() }
+    val topPadding = if (applyStatusBarTopPadding) halfStatusBarTopPadding else 0.dp
+    val secondaryTextColor = if (highContrastMode) Color(0xFFECEFF1) else MidGreyText
+    val primaryValueColor = if (highContrastMode) Color(0xFFFFFFE0) else YellowText
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = BgBlack
@@ -127,7 +132,7 @@ fun StartLine(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = halfStatusBarTopPadding)
+                .padding(top = topPadding)
                 .padding(CompactPagePadding)
         ) {
 
@@ -204,7 +209,7 @@ fun StartLine(
 
                 Text(
                     text = countdownDisplayText,
-                    color = if (countdownOvertimeActive) CountdownOvertimeBlue else YellowText,
+                    color = if (countdownOvertimeActive) CountdownOvertimeBlue else primaryValueColor,
                     fontSize = 90.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = if (enableCountdownTapRound) {
@@ -238,13 +243,13 @@ fun StartLine(
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = timerTopMessage,
-                    color = MidGreyText,
+                    color = secondaryTextColor,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            Spacer(modifier = Modifier.height(CompactGapXs))
+            Spacer(modifier = Modifier.height(0.dp))
 
             if (showStartStopResetButtons || showInfoRowWhenControlsHidden) {
                 // Start / Reset
@@ -255,12 +260,15 @@ fun StartLine(
                     contentAlignment = Alignment.Center
                 ) {
                     val leftText = leftInfoText ?: clockDisplayText
+                    val compactInfoRow = !showStartStopResetButtons &&
+                        !leftInfoText.isNullOrBlank() &&
+                        !rightInfoText.isNullOrBlank()
                     if (leftText.isNotBlank()) {
                         Text(
                             text = leftText,
-                            color = MidGreyText,
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold,
+                            color = secondaryTextColor,
+                            fontSize = if (compactInfoRow) 14.sp else 28.sp,
+                            fontWeight = if (compactInfoRow) FontWeight.SemiBold else FontWeight.Bold,
                             modifier = Modifier.align(Alignment.CenterStart)
                         )
                     }
@@ -302,7 +310,7 @@ fun StartLine(
                     } else if (!rightInfoText.isNullOrBlank()) {
                         Text(
                             text = rightInfoText,
-                            color = MidGreyText,
+                            color = secondaryTextColor,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.align(Alignment.CenterEnd)
@@ -317,7 +325,7 @@ fun StartLine(
                     .background(Color.Gray)
             )
 
-            Spacer(modifier = Modifier.height(CompactGapM))
+            Spacer(modifier = Modifier.height(CompactGapXs))
 
             // Speed row
             Row(
@@ -335,7 +343,7 @@ fun StartLine(
 
                 Text(
                     text = speedDisplayText,
-                    color = MidGreyText,
+                    color = secondaryTextColor,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.pointerInput(onDoubleClickAction) {
@@ -360,6 +368,39 @@ fun StartLine(
 
             Spacer(modifier = Modifier.height(CompactGapM))
 
+            if (!showBuoyControls) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        text = "expected boat speed",
+                        color = secondaryTextColor,
+                        fontSize = 12.sp
+                    )
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = lineLengthDisplayText,
+                            color = secondaryTextColor,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = lineEtaDisplayText,
+                            color = secondaryTextColor,
+                            fontSize = 22.sp
+                        )
+                        Text(
+                            text = "start line width",
+                            color = secondaryTextColor,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(0.dp))
+            }
+
             // Set L / center / Set R
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -381,21 +422,23 @@ fun StartLine(
                     Spacer(modifier = Modifier.width(CompactGapS))
                 }
 
-                Column(
-                    modifier = Modifier.padding(horizontal = CompactGapXs),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = lineLengthDisplayText,
-                        color = MidGreyText,
-                        fontSize = 30.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = lineEtaDisplayText,
-                        color = MidGreyText,
-                        fontSize = 22.sp
-                    )
+                if (showBuoyControls) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = CompactGapXs),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = lineLengthDisplayText,
+                            color = secondaryTextColor,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = lineEtaDisplayText,
+                            color = secondaryTextColor,
+                            fontSize = 22.sp
+                        )
+                    }
                 }
 
                 if (showBuoyControls) {
@@ -414,7 +457,7 @@ fun StartLine(
                 }
             }
 
-            Spacer(modifier = Modifier.height(CompactGapL))
+            Spacer(modifier = Modifier.height(if (showBuoyControls) CompactGapL else 4.dp))
 
             // Rezultat box
             Box(
@@ -427,13 +470,13 @@ fun StartLine(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = distanceDisplayText,
-                        color = YellowText,
+                        color = primaryValueColor,
                         fontSize = 66.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = etaDeltaDisplayText,
-                        color = YellowText,
+                        color = primaryValueColor,
                         fontSize = 66.sp,
                         fontWeight = FontWeight.Bold
                     )

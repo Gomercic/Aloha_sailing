@@ -351,9 +351,9 @@ class ShiftWindAnalyzer(
             notes += "DUAL σ-pass #${iteration + 1} ($sigmaLabel): stdA=${"%.1f".format(stdA)}°, keepA=${filteredA.size}/${clusterA.size}, rejectA=${"%.1f".format(rejectPctA)}%, stdB=${"%.1f".format(stdB)}°, keepB=${filteredB.size}/${clusterB.size}, rejectB=${"%.1f".format(rejectPctB)}%"
             if (filteredA.isEmpty() || filteredB.isEmpty()) {
                 notes += if (sigma == null) {
-                    "DUAL fail: nema valjanih točaka u jednom klasteru"
+                    "DUAL fail: no valid points in one cluster"
                 } else {
-                    "DUAL fail: ${"%.1f".format(sigma)}σ filter izbacio sve točke u jednom klasteru"
+                    "DUAL fail: ${"%.1f".format(sigma)}σ filter removed all points in one cluster"
                 }
                 return DualEvaluation(result = null, notes = notes)
             }
@@ -371,7 +371,7 @@ class ShiftWindAnalyzer(
         }
 
         val separation = abs(signedShortestAngle(meanA, meanB))
-        notes += "DUAL check: separation=${"%.1f".format(separation)}° (traženo ${"%.0f".format(minTackSeparationDeg)}..${"%.0f".format(maxTackSeparationDeg)}°)"
+        notes += "DUAL check: separation=${"%.1f".format(separation)}° (required ${"%.0f".format(minTackSeparationDeg)}..${"%.0f".format(maxTackSeparationDeg)}°)"
         if (separation !in minTackSeparationDeg..maxTackSeparationDeg) {
             notes += "DUAL fail: separation izvan raspona"
             return DualEvaluation(result = null, notes = notes)
@@ -385,7 +385,7 @@ class ShiftWindAnalyzer(
         val spreadB = circularSpreadDeg(clusterB.map { it.cogDeg }, meanB)
         notes += "DUAL check: spreadA=${"%.1f".format(spreadA)}°, spreadB=${"%.1f".format(spreadB)}°, max=${"%.0f".format(maxClusterSpreadDeg)}°"
         if (spreadA > maxClusterSpreadDeg || spreadB > maxClusterSpreadDeg) {
-            notes += "DUAL fail: spread preširok"
+            notes += "DUAL fail: spread too wide"
             return DualEvaluation(result = null, notes = notes)
         }
 

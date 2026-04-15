@@ -41,6 +41,21 @@ class RegattaPreferences(context: Context) {
     val lastOrganizerAccessValue: String
         get() = prefs.getString(KEY_LAST_ORGANIZER_ACCESS_VALUE, "")?.trim().orEmpty()
 
+    val lastBoatName: String
+        get() = prefs.getString(KEY_LAST_BOAT_NAME, "")?.trim().orEmpty()
+
+    val lastSkipperName: String
+        get() = prefs.getString(KEY_LAST_SKIPPER_NAME, "")?.trim().orEmpty()
+
+    val lastClubName: String
+        get() = prefs.getString(KEY_LAST_CLUB_NAME, "")?.trim().orEmpty()
+
+    val lastBoatLengthValue: String
+        get() = prefs.getString(KEY_LAST_BOAT_LENGTH_VALUE, "")?.trim().orEmpty()
+
+    val lastBoatLengthUnit: String
+        get() = prefs.getString(KEY_LAST_BOAT_LENGTH_UNIT, "m")?.trim().orEmpty().ifBlank { "m" }
+
     fun saveOrganizerName(name: String) {
         prefs.edit().putString(KEY_ORGANIZER_NAME, name.trim()).apply()
     }
@@ -63,6 +78,22 @@ class RegattaPreferences(context: Context) {
 
     fun saveLastOrganizerAccessValue(value: String) {
         prefs.edit().putString(KEY_LAST_ORGANIZER_ACCESS_VALUE, value.trim()).apply()
+    }
+
+    fun saveLastBoatDetails(
+        boatName: String,
+        skipperName: String,
+        clubName: String,
+        lengthValue: String,
+        lengthUnit: String
+    ) {
+        prefs.edit()
+            .putString(KEY_LAST_BOAT_NAME, boatName.trim())
+            .putString(KEY_LAST_SKIPPER_NAME, skipperName.trim())
+            .putString(KEY_LAST_CLUB_NAME, clubName.trim())
+            .putString(KEY_LAST_BOAT_LENGTH_VALUE, lengthValue.trim())
+            .putString(KEY_LAST_BOAT_LENGTH_UNIT, lengthUnit.trim().ifBlank { "m" })
+            .apply()
     }
 
     fun saveOrganizerSession(eventId: String, token: String) {
@@ -110,6 +141,11 @@ class RegattaPreferences(context: Context) {
         private const val KEY_ORGANIZER_SESSIONS = "organizer_sessions"
         private const val KEY_LAST_JOIN_CODE = "last_join_code"
         private const val KEY_LAST_ORGANIZER_ACCESS_VALUE = "last_organizer_access_value"
+        private const val KEY_LAST_BOAT_NAME = "last_boat_name"
+        private const val KEY_LAST_SKIPPER_NAME = "last_skipper_name"
+        private const val KEY_LAST_CLUB_NAME = "last_club_name"
+        private const val KEY_LAST_BOAT_LENGTH_VALUE = "last_boat_length_value"
+        private const val KEY_LAST_BOAT_LENGTH_UNIT = "last_boat_length_unit"
     }
 
     private fun readOrganizerSessions(): MutableMap<String, String> {

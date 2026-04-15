@@ -71,6 +71,7 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Card
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -214,7 +215,7 @@ fun StartLineScreen() {
         mutableStateOf(!MainActivity.hasShownWelcomeForCurrentProcess)
     }
     var currentScreen by rememberSaveable {
-        mutableStateOf(AppScreen.Main)
+        mutableStateOf<AppScreen>(AppScreen.Main)
     }
     var showExitConfirmDialog by rememberSaveable { mutableStateOf(false) }
     var showRaceLogoutConfirmDialog by rememberSaveable { mutableStateOf(false) }
@@ -230,7 +231,7 @@ fun StartLineScreen() {
     var anchorMapZoom by rememberSaveable { mutableStateOf(1.0f) }
     var anchorAutoZoomEnabled by rememberSaveable { mutableStateOf(true) }
     var speedKnots by rememberSaveable { mutableStateOf(6.0) }
-    var speedStatus by rememberSaveable { mutableStateOf("Ručno podešena brzina") }
+    var speedStatus by rememberSaveable { mutableStateOf("Manually set speed") }
     var leftBuoyLat by rememberSaveable { mutableStateOf<Double?>(null) }
     var leftBuoyLon by rememberSaveable { mutableStateOf<Double?>(null) }
     var rightBuoyLat by rememberSaveable { mutableStateOf<Double?>(null) }
@@ -288,6 +289,7 @@ fun StartLineScreen() {
     /** Sekunde nakon što je odbrojavanje došlo do 0; štoperica ide naprijed dok traje trka / dok se ne resetira. */
     var postZeroElapsedSeconds by remember { mutableLongStateOf(0L) }
     var isCountdownRunning by remember { mutableStateOf(false) }
+    var lastRaceCountdownCueSecond by remember { mutableStateOf<Long?>(null) }
     var anchorLat by rememberSaveable { mutableStateOf<Double?>(null) }
     var anchorLon by rememberSaveable { mutableStateOf<Double?>(null) }
     var anchorRadiusMeters by rememberSaveable { mutableDoubleStateOf(DEFAULT_ANCHOR_RADIUS_METERS) }
@@ -351,13 +353,14 @@ fun StartLineScreen() {
     var regattaSessionLocked by remember { mutableStateOf(false) }
     var regattaJoinModeActive by remember { mutableStateOf(false) }
     var regattaRaceSessionRunning by remember { mutableStateOf(false) }
+    var regattaPrestartTrackLastEpochMs by remember { mutableLongStateOf(0L) }
+    var openRegattaJoinFormFromMenu by rememberSaveable { mutableStateOf(false) }
     var regattaSelectedRaceId by remember { mutableStateOf("") }
     var regattaStopRaceTapCount by remember { mutableIntStateOf(0) }
     var regattaStopRaceLastTapEpochMs by remember { mutableLongStateOf(0L) }
     var regattaLiveSnapshot by remember { mutableStateOf<com.aloha.startline.regatta.RegattaLiveSnapshot?>(null) }
     var regattaEventSnapshot by remember { mutableStateOf<com.aloha.startline.regatta.RegattaEventSnapshot?>(null) }
     var raceMapBoatMenuExpanded by remember { mutableStateOf(false) }
-    var raceMapBoatSearchQuery by remember { mutableStateOf("") }
     var raceMapSelectedBoatId by remember { mutableStateOf("") }
     var isSuperuserMode by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -444,6 +447,25 @@ fun StartLineScreen() {
                             )
                             raceTrackLastRecordedCourseDeg =
                                 segmentCourseDeg ?: raceTrackLastRecordedCourseDeg
+                        }
+                    }
+                    if (regattaJoinModeActive && regattaRaceSessionRunning) {
+                        val epochNow = System.currentTimeMillis()
+                        val countdownTargetEpochMs = regattaLiveSnapshot?.countdownTargetEpochMs
+                        val shouldRecordPrestartTrack =
+                            countdownTargetEpochMs != null && epochNow <= countdownTargetEpochMs
+                        if (shouldRecordPrestartTrack) {
+                            val intervalReached =
+                                regattaPrestartTrackLastEpochMs == 0L ||
+                                    epochNow - regattaPrestartTrackLastEpochMs >= REGATTA_PRESTART_TRACK_INTERVAL_MS
+                            if (intervalReached) {
+                                raceTrackPoints = raceTrackPoints + RaceTrackPoint(
+                                    latitude = latestLocation.latitude,
+                                    longitude = latestLocation.longitude,
+                                    epochMillis = epochNow
+                                )
+                                regattaPrestartTrackLastEpochMs = epochNow
+                            }
                         }
                     }
                 }
@@ -550,13 +572,13 @@ fun StartLineScreen() {
     LaunchedEffect(regattaJoinModeActive) {
         if (!regattaJoinModeActive) {
             regattaRaceSessionRunning = false
+            regattaPrestartTrackLastEpochMs = 0L
             regattaSelectedRaceId = ""
             regattaStopRaceTapCount = 0
             regattaStopRaceLastTapEpochMs = 0L
             regattaLiveSnapshot = null
             regattaEventSnapshot = null
             raceMapSelectedBoatId = ""
-            raceMapBoatSearchQuery = ""
             raceMapBoatMenuExpanded = false
         }
     }
@@ -1012,28 +1034,31 @@ fun StartLineScreen() {
         }
     }
     val raceCountdownOvertime = (raceRemainingSeconds ?: 1L) < 0L
+    val raceStartTimeText = remember(raceCountdownTarget) {
+        val formatter = SimpleDateFormat("HH:mm:ss", Locale.US)
+        if (raceCountdownTarget != null) {
+            "Start ${formatter.format(Date(raceCountdownTarget))}"
+        } else {
+            "Start --:--:--"
+        }
+    }
+    val raceCurrentTimeText = remember(raceNowEpochMs) {
+        val formatter = SimpleDateFormat("HH:mm:ss", Locale.US)
+        "Time ${formatter.format(Date(raceNowEpochMs))}"
+    }
     val regattaNoticePosts = regattaEventSnapshot?.noticePosts.orEmpty()
+    val raceMapBoats = regattaEventSnapshot?.boats.orEmpty()
     val raceMapParticipants = regattaLiveSnapshot?.participants.orEmpty()
     val regattaJoinedParticipant = raceMapParticipants.firstOrNull { it.boatId == regattaPrefs.joinedBoatId }
     val regattaFinishEpochMs = regattaJoinedParticipant?.finishedAtEpochMs
     val raceMapSelectedBoat = raceMapParticipants.firstOrNull { it.boatId == raceMapSelectedBoatId }
-    val raceMapFilteredParticipants = remember(raceMapParticipants, raceMapBoatSearchQuery) {
-        val query = raceMapBoatSearchQuery.trim()
-        if (query.isBlank()) {
-            raceMapParticipants
-        } else {
-            raceMapParticipants.filter { participant ->
-                participant.boatName.contains(query, ignoreCase = true) ||
-                    participant.skipperName.contains(query, ignoreCase = true)
-            }
-        }
-    }
+    val raceMapSelectedBoatSummary = raceMapBoats.firstOrNull { it.id == raceMapSelectedBoatId }
     val raceNotConfiguredMessage = if (
         regattaLiveSnapshot == null ||
         raceCountdownTarget == null ||
         raceStartGate == null
     ) {
-        "Regata još nije zadana"
+        "Race not yet configured."
     } else {
         null
     }
@@ -1391,6 +1416,7 @@ fun StartLineScreen() {
                 !showWelcomeScreen &&
                 (
                     currentScreen == AppScreen.Main ||
+                        currentScreen == AppScreen.RaceStartLine ||
                         currentScreen == AppScreen.WindShift ||
                         currentScreen == AppScreen.Anchoring
                     )
@@ -1460,6 +1486,29 @@ fun StartLineScreen() {
         }
     }
 
+    LaunchedEffect(currentScreen, raceRemainingSeconds) {
+        if (currentScreen != AppScreen.RaceStartLine) {
+            lastRaceCountdownCueSecond = null
+            return@LaunchedEffect
+        }
+        val remaining = raceRemainingSeconds ?: run {
+            lastRaceCountdownCueSecond = null
+            return@LaunchedEffect
+        }
+        if (remaining < 0L) return@LaunchedEffect
+        val previous = lastRaceCountdownCueSecond
+        if (previous == null) {
+            lastRaceCountdownCueSecond = remaining
+            return@LaunchedEffect
+        }
+        if (previous == remaining) return@LaunchedEffect
+        playCountdownCue(
+            toneGenerator = countdownTone,
+            remainingSeconds = remaining
+        )
+        lastRaceCountdownCueSecond = remaining
+    }
+
     val colorScheme = if (screenMode == ScreenMode.Dark) {
         darkColorScheme(
             background = Color.Black,
@@ -1478,9 +1527,9 @@ fun StartLineScreen() {
     val shouldSaveTrackOnExit = !isLoggedInRegatta && isTrackRecording && raceTrackPoints.isNotEmpty()
     val exitConfirmMessage = when {
         regattaRaceSessionRunning ->
-            "Race je aktivan i izlaskom će se brod isključiti iz race."
+            "Race is active and exiting will disconnect your boat from the race."
         !isLoggedInRegatta && isTrackRecording ->
-            "Snima se track i izlaskom će snimanje tracka biti zaustavljeno."
+            "Track is recording and exiting will stop track recording."
         else -> "Are you sure?"
     }
 
@@ -1567,7 +1616,7 @@ fun StartLineScreen() {
                     onDismissRequest = { showRaceLogoutBlockedDialog = false },
                     title = { Text("Logout from race") },
                     text = {
-                        Text("Race is aktiv. Moraš prvo zaustaviti race na Startline race stranici.")
+                        Text("Race is active. You must first stop the race on the Start Line race screen.")
                     },
                     confirmButton = {
                         TextButton(onClick = { showRaceLogoutBlockedDialog = false }) {
@@ -1734,9 +1783,9 @@ fun StartLineScreen() {
                     onSpeedFromGps = {
                         if (approachSpeedKnots != null) {
                             speedKnots = approachSpeedKnots
-                            speedStatus = "Brzina približavanja liniji (${avgWindowSeconds}s)"
+                            speedStatus = "Line approach speed (${avgWindowSeconds}s)"
                         } else {
-                            speedStatus = "Nema podataka za brzinu približavanja liniji"
+                            speedStatus = "No data for line approach speed"
                         }
                     },
                     onSpeedPlus = {
@@ -1823,13 +1872,15 @@ fun StartLineScreen() {
                 isWindShiftScreen || isAnchoringScreen || isRegattaScreen ||
                     isRaceStartLineScreen || isRaceMapScreen ||
                     isSettingsScreen || isTrackLogScreen || isHelpScreen
-            LaunchedEffect(regattaSessionLocked, currentScreen) {
+            LaunchedEffect(regattaSessionLocked, regattaJoinModeActive, currentScreen) {
                 if (regattaJoinModeActive) {
+                    if (currentScreen == AppScreen.Regatta) {
+                        return@LaunchedEffect
+                    }
                     val blockedJoinScreens = setOf(
                         AppScreen.Main,
                         AppScreen.WindShift,
                         AppScreen.Anchoring,
-                        AppScreen.Regatta,
                         AppScreen.TrackLog,
                         AppScreen.WindShiftDebug,
                         AppScreen.Settings,
@@ -1915,6 +1966,10 @@ fun StartLineScreen() {
                             currentScreen = when (selected) {
                                 AppScreen.RaceStartLine -> AppScreen.RaceStartLine
                                 AppScreen.RaceMap -> AppScreen.RaceMap
+                                AppScreen.Regatta -> {
+                                    openRegattaJoinFormFromMenu = true
+                                    AppScreen.Regatta
+                                }
                                 else -> AppScreen.RaceStartLine
                             }
                         } else if (
@@ -2234,7 +2289,7 @@ fun StartLineScreen() {
                                     anchorRadiusInput = sanitized
                                     val parsed = sanitized.toIntOrNull()
                                     when {
-                                        sanitized.isBlank() -> anchorRadiusError = "Unesi radius."
+                                        sanitized.isBlank() -> anchorRadiusError = "Enter radius."
                                         parsed == null -> anchorRadiusError = "Neispravan broj."
                                         parsed < MIN_ANCHOR_RADIUS_METERS -> anchorRadiusError =
                                             "Min $MIN_ANCHOR_RADIUS_METERS m."
@@ -2290,7 +2345,7 @@ fun StartLineScreen() {
                                         anchorSegmentCenterInput = sanitized
                                         val parsed = sanitized.toIntOrNull()
                                         when {
-                                            sanitized.isBlank() -> anchorSegmentCenterError = "Unesi smjer."
+                                            sanitized.isBlank() -> anchorSegmentCenterError = "Enter bearing."
                                             parsed == null -> anchorSegmentCenterError = "Neispravan broj."
                                             parsed !in 0..359 -> anchorSegmentCenterError = "Raspon 0..359."
                                             else -> {
@@ -2317,7 +2372,7 @@ fun StartLineScreen() {
                                         anchorSegmentWidthInput = sanitized
                                         val parsed = sanitized.toIntOrNull()
                                         when {
-                                            sanitized.isBlank() -> anchorSegmentWidthError = "Unesi širinu."
+                                            sanitized.isBlank() -> anchorSegmentWidthError = "Enter width."
                                             parsed == null -> anchorSegmentWidthError = "Neispravan broj."
                                             parsed < MIN_ANCHOR_SEGMENT_WIDTH_DEG.toInt() ->
                                                 anchorSegmentWidthError = "Min ${MIN_ANCHOR_SEGMENT_WIDTH_DEG.toInt()}."
@@ -2347,7 +2402,7 @@ fun StartLineScreen() {
                                         anchorConeApexOffsetInput = sanitized
                                         val parsed = sanitized.toIntOrNull()
                                         when {
-                                            sanitized.isBlank() -> anchorConeApexOffsetError = "Unesi apex."
+                                            sanitized.isBlank() -> anchorConeApexOffsetError = "Enter apex."
                                             parsed == null -> anchorConeApexOffsetError = "Neispravan broj."
                                             parsed < MIN_ANCHOR_CONE_APEX_OFFSET_METERS ->
                                                 anchorConeApexOffsetError = "Min ${MIN_ANCHOR_CONE_APEX_OFFSET_METERS.toInt()}."
@@ -3486,125 +3541,86 @@ fun StartLineScreen() {
                 }
 
                 if (currentScreen == AppScreen.Regatta) {
-                    RegattaScreen(
-                        apiClient = regattaClient,
-                        prefs = regattaPrefs,
-                        currentLocation = currentLocation,
-                        onSessionStateChanged = { locked -> regattaSessionLocked = locked },
-                        onOpenRaceStartLine = { currentScreen = AppScreen.RaceStartLine },
-                        onJoinModeChanged = { active -> regattaJoinModeActive = active }
-                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        RegattaScreen(
+                            apiClient = regattaClient,
+                            prefs = regattaPrefs,
+                            currentLocation = currentLocation,
+                            openJoinFormOnEnter = openRegattaJoinFormFromMenu,
+                            onSessionStateChanged = { locked -> regattaSessionLocked = locked },
+                            onOpenRaceStartLine = { currentScreen = AppScreen.RaceStartLine },
+                            onJoinModeChanged = { active -> regattaJoinModeActive = active }
+                        )
+                    }
+                    openRegattaJoinFormFromMenu = false
                     return@Column
                 }
                 if (currentScreen == AppScreen.RaceStartLine) {
                     StartLine(
+                        applyStatusBarTopPadding = false,
+                        highContrastMode = true,
                         headerContent = {
                             Column(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                AppHeader(
-                                    screenTitle = screenTitle,
-                                    currentScreen = currentScreen,
-                                    regattaSessionLocked = regattaSessionLocked,
-                                    regattaJoinModeActive = regattaJoinModeActive,
-                                    isSuperuserMode = isSuperuserMode,
-                                    showRaceLogout = regattaSessionLocked || regattaJoinModeActive,
-                                    isTrackRecording = isTrackRecording,
-                                    averageTrueSpeedKnots = averageTrueSpeedKnots,
-                                    menuExpanded = menuExpanded,
-                                    onMenuExpandedChange = { menuExpanded = it },
-                                    onScreenSelected = { selected ->
-                                        currentScreen = when (selected) {
-                                            AppScreen.RaceMap -> AppScreen.RaceMap
-                                            else -> AppScreen.RaceStartLine
-                                        }
-                                    },
-                                    onToggleMainWindShift = {
-                                        currentScreen = AppScreen.RaceMap
-                                    },
-                                    onExitClick = { showExitConfirmDialog = true },
-                                    onRaceLogoutClick = {
-                                        if (regattaRaceSessionRunning) {
-                                            showRaceLogoutBlockedDialog = true
-                                        } else {
-                                            showRaceLogoutConfirmDialog = true
-                                        }
-                                    },
-                                    titleColor = Color.White,
-                                    speedColor = HIGH_CONTRAST_YELLOW,
-                                    menuColor = Color.White
-                                )
-                                if (!regattaRaceSessionRunning) {
-                                    Button(
-                                        onClick = {
-                                            regattaRaceSessionRunning = true
-                                            regattaStopRaceTapCount = 0
-                                            regattaStopRaceLastTapEpochMs = 0L
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
-                                    ) { Text("Start Race") }
-                                } else {
-                                    Button(
-                                        onClick = {
-                                            val now = System.currentTimeMillis()
-                                            if (now - regattaStopRaceLastTapEpochMs > 2_000L) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (!regattaRaceSessionRunning) {
+                                        Button(
+                                            onClick = {
+                                                regattaRaceSessionRunning = true
                                                 regattaStopRaceTapCount = 0
-                                            }
-                                            regattaStopRaceTapCount += 1
-                                            regattaStopRaceLastTapEpochMs = now
-                                            if (regattaStopRaceTapCount >= 3) {
-                                                regattaRaceSessionRunning = false
-                                                regattaStopRaceTapCount = 0
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
-                                    ) {
-                                        Text("Stop Race (tripl tap)")
-                                    }
-                                }
-                                Text(
-                                    text = regattaRaceStatusText,
-                                    color = Color(0xFFBDBDBD),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                if (regattaNoticePosts.isNotEmpty()) {
-                                    Text(
-                                        text = "Notice board (${regattaNoticePosts.size})",
-                                        color = Color(0xFFCFD8DC),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(120.dp)
-                                            .verticalScroll(rememberScrollState()),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        regattaNoticePosts.forEach { post ->
-                                            Card(modifier = Modifier.fillMaxWidth()) {
-                                                Column(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .background(Color(0xFF171717))
-                                                        .padding(8.dp)
-                                                ) {
-                                                    Text(
-                                                        post.noticeText.ifBlank { "--" },
-                                                        color = Color.White,
-                                                        fontSize = 12.sp
+                                                regattaStopRaceLastTapEpochMs = 0L
+                                                regattaPrestartTrackLastEpochMs = 0L
+                                                raceTrackPoints = emptyList()
+                                                currentLocation?.let { location ->
+                                                    val now = System.currentTimeMillis()
+                                                    raceTrackPoints = listOf(
+                                                        RaceTrackPoint(
+                                                            latitude = location.latitude,
+                                                            longitude = location.longitude,
+                                                            epochMillis = now
+                                                        )
                                                     )
-                                                    Text(
-                                                        formatRegattaNoticeTimestamp(post.publishedAt),
-                                                        color = Color(0xFFB0BEC5),
-                                                        fontSize = 11.sp
-                                                    )
+                                                    regattaPrestartTrackLastEpochMs = now
                                                 }
-                                            }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                        ) { Text("Start Race") }
+                                    } else {
+                                        Button(
+                                            onClick = {
+                                                val now = System.currentTimeMillis()
+                                                if (now - regattaStopRaceLastTapEpochMs > 2_000L) {
+                                                    regattaStopRaceTapCount = 0
+                                                }
+                                                regattaStopRaceTapCount += 1
+                                                regattaStopRaceLastTapEpochMs = now
+                                                if (regattaStopRaceTapCount >= 3) {
+                                                    regattaRaceSessionRunning = false
+                                                    regattaStopRaceTapCount = 0
+                                                    regattaPrestartTrackLastEpochMs = 0L
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
+                                        ) {
+                                            Text("Stop Race (tripl tap)")
                                         }
                                     }
+                                    Text(
+                                        text = regattaRaceStatusText,
+                                        color = Color(0xFFBDBDBD),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         },
@@ -3627,8 +3643,8 @@ fun StartLineScreen() {
                         showStartStopResetButtons = false,
                         showBuoyControls = false,
                         showInfoRowWhenControlsHidden = true,
-                        leftInfoText = "Start regata",
-                        rightInfoText = "Time ${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(raceNowEpochMs))}",
+                        leftInfoText = raceStartTimeText,
+                        rightInfoText = raceCurrentTimeText,
                         mapContent = {
                             StartLineMap(
                                 leftBuoyLocation = raceLeftBuoyLocation,
@@ -3639,10 +3655,27 @@ fun StartLineScreen() {
                                 mapMode = mapMode,
                                 mapRenderMode = mapRenderMode,
                                 mapZoom = mapZoom,
-                                onToggleMapMode = {},
-                                onToggleCanvasOsmFromMap = {},
-                                onZoomIn = {},
-                                onZoomOut = {}
+                                singleTapControls = true,
+                                onToggleMapMode = {
+                                    mapMode = if (mapMode == MapMode.NorthUp) {
+                                        MapMode.StartLineUp
+                                    } else {
+                                        MapMode.NorthUp
+                                    }
+                                },
+                                onToggleCanvasOsmFromMap = {
+                                    mapRenderMode = if (mapRenderMode == MapRenderMode.Canvas) {
+                                        MapRenderMode.Osm
+                                    } else {
+                                        MapRenderMode.Canvas
+                                    }
+                                },
+                                onZoomIn = {
+                                    mapZoom = (mapZoom * 1.25f).coerceAtMost(6.0f)
+                                },
+                                onZoomOut = {
+                                    mapZoom = (mapZoom / 1.25f).coerceAtLeast(0.18f)
+                                }
                             )
                         }
                     )
@@ -3653,64 +3686,84 @@ fun StartLineScreen() {
                         modifier = Modifier
                             .fillMaxSize()
                             .background(Color.Black),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        TextButton(
-                            onClick = { currentScreen = AppScreen.RaceStartLine },
-                            colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF90CAF9))
-                        ) {
-                            Text("Race StartLine", fontWeight = FontWeight.Bold)
+                        raceNotConfiguredMessage?.let { message ->
+                            Text(
+                                text = message,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
-                        Text(
-                            text = raceNotConfiguredMessage ?: "Race Map",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
                         Box(modifier = Modifier.fillMaxWidth()) {
                             OutlinedButton(
                                 onClick = { raceMapBoatMenuExpanded = true },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                val selectedLabel = raceMapSelectedBoat?.boatName ?: "Odaberi brod"
+                                val selectedLabel = raceMapSelectedBoatSummary?.boatName
+                                    ?: raceMapSelectedBoat?.boatName
+                                    ?: "Select boat"
                                 Text(selectedLabel)
                             }
                             DropdownMenu(
                                 expanded = raceMapBoatMenuExpanded,
                                 onDismissRequest = { raceMapBoatMenuExpanded = false }
                             ) {
-                                OutlinedTextField(
-                                    value = raceMapBoatSearchQuery,
-                                    onValueChange = { raceMapBoatSearchQuery = it },
-                                    label = { Text("Search boat") },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 8.dp)
-                                )
-                                raceMapFilteredParticipants.take(30).forEach { participant ->
-                                    val speed = participant.lastSpeedKnots?.let {
-                                        String.format(Locale.US, "%.1f kn", it)
-                                    } ?: "-- kn"
+                                if (raceMapBoats.isEmpty()) {
                                     DropdownMenuItem(
-                                        text = { Text("${participant.boatName} · $speed") },
-                                        onClick = {
-                                            raceMapSelectedBoatId = participant.boatId
-                                            raceMapBoatMenuExpanded = false
-                                        }
+                                        text = { Text("No registered boats") },
+                                        onClick = { raceMapBoatMenuExpanded = false }
                                     )
+                                } else {
+                                    raceMapBoats.forEach { boat ->
+                                        val participant = raceMapParticipants.firstOrNull {
+                                            it.boatId == boat.id
+                                        }
+                                        val hasStartedRace = participant?.startSnapshotEpochMs != null
+                                        val statusLabel = if (hasStartedRace) {
+                                            "Start race ON"
+                                        } else {
+                                            "Start race OFF"
+                                        }
+                                        val statusColor = if (hasStartedRace) {
+                                            Color(0xFF43A047)
+                                        } else {
+                                            Color(0xFFE53935)
+                                        }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text("●", color = statusColor, fontSize = 12.sp)
+                                                    Text("${boat.boatName} · $statusLabel")
+                                                }
+                                            },
+                                            onClick = {
+                                                raceMapSelectedBoatId = boat.id
+                                                raceMapBoatMenuExpanded = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
-                        Box(
+                        Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF111111))
+                                .weight(1f),
+                            color = Color(0xFF111111),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF4A4A4A)),
+                            tonalElevation = 0.dp
                         ) {
                             JoinRaceMapView(
                                 gates = regattaLiveSnapshot?.gates.orEmpty(),
                                 participants = raceMapParticipants,
-                                selectedBoatId = raceMapSelectedBoatId
+                                selectedBoatId = raceMapSelectedBoatId,
+                                fallbackCenter = averagedRegattaLocation ?: currentLocation,
+                                modifier = Modifier.fillMaxSize()
                             )
                         }
                     }
@@ -3721,92 +3774,135 @@ fun StartLineScreen() {
     }
 }
 
+
 @Composable
 private fun JoinRaceMapView(
     gates: List<com.aloha.startline.regatta.RegattaGate>,
     participants: List<com.aloha.startline.regatta.RegattaParticipantLive>,
-    selectedBoatId: String
+    selectedBoatId: String,
+    fallbackCenter: Location?,
+    modifier: Modifier = Modifier
 ) {
+    var hasAutoFitted by remember(
+        gates,
+        participants,
+        selectedBoatId
+    ) { mutableStateOf(false) }
     val visibleParticipants = participants.filter {
         it.lastLatitude != null && it.lastLongitude != null
     }
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
-            MapView(ctx).apply {
-                setTileSource(TileSourceFactory.MAPNIK)
-                setMultiTouchControls(true)
-                setBuiltInZoomControls(false)
-                isTilesScaledToDpi = true
-                controller.setZoom(14.0)
-            }
-        },
-        update = { mapView ->
-            mapView.overlays.clear()
-            val boundsPoints = mutableListOf<GeoPoint>()
+    val hasMapData = gates.isNotEmpty() || visibleParticipants.isNotEmpty()
+    Box(modifier = modifier) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
+                MapView(ctx).apply {
+                    setTileSource(TileSourceFactory.MAPNIK)
+                    setMultiTouchControls(true)
+                    setBuiltInZoomControls(false)
+                    isTilesScaledToDpi = true
+                    controller.setZoom(14.0)
+                }
+            },
+            update = { mapView ->
+                mapView.overlays.clear()
+                val fitPoints = mutableListOf<GeoPoint>()
+                val fallbackPoint = fallbackCenter?.let { GeoPoint(it.latitude, it.longitude) }
 
-            gates.forEach { gate ->
-                val a = GeoPoint(gate.pointA.latitude, gate.pointA.longitude)
-                val b = GeoPoint(gate.pointB.latitude, gate.pointB.longitude)
-                boundsPoints += a
-                boundsPoints += b
-                mapView.overlays.add(
-                    Polyline(mapView).apply {
-                        outlinePaint.color = when (gate.type.lowercase(Locale.US)) {
-                            "start" -> android.graphics.Color.YELLOW
-                            "finish" -> android.graphics.Color.RED
-                            else -> android.graphics.Color.rgb(66, 165, 245)
+                gates.forEach { gate ->
+                    val a = GeoPoint(gate.pointA.latitude, gate.pointA.longitude)
+                    val b = GeoPoint(gate.pointB.latitude, gate.pointB.longitude)
+                    fitPoints += a
+                    fitPoints += b
+                    mapView.overlays.add(
+                        Polyline(mapView).apply {
+                            outlinePaint.color = when (gate.type.lowercase(Locale.US)) {
+                                "start" -> android.graphics.Color.YELLOW
+                                "finish" -> android.graphics.Color.RED
+                                else -> android.graphics.Color.rgb(66, 165, 245)
+                            }
+                            outlinePaint.strokeWidth = 7f
+                            setPoints(listOf(a, b))
+                            title = gate.name
                         }
-                        outlinePaint.strokeWidth = 7f
-                        setPoints(listOf(a, b))
-                        title = gate.name
-                    }
-                )
-            }
+                    )
+                }
 
-            var selectedPoint: GeoPoint? = null
-            visibleParticipants.forEach { participant ->
-                val lat = participant.lastLatitude ?: return@forEach
-                val lon = participant.lastLongitude ?: return@forEach
-                val point = GeoPoint(lat, lon)
-                boundsPoints += point
-                val selected = participant.boatId == selectedBoatId
-                if (selected) {
-                    selectedPoint = point
-                }
-                mapView.overlays.add(
-                    Marker(mapView).apply {
-                        position = point
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                        icon = createBoatMarkerDrawable(
-                            sizePx = if (selected) 44 else 28,
-                            color = if (selected) android.graphics.Color.YELLOW else android.graphics.Color.CYAN
-                        )
-                        title = participant.boatName
-                        subDescription = participant.lastSpeedKnots?.let {
-                            String.format(Locale.US, "%.1f kn", it)
-                        } ?: "-- kn"
+                var selectedPoint: GeoPoint? = null
+                visibleParticipants.forEach { participant ->
+                    val lat = participant.lastLatitude ?: return@forEach
+                    val lon = participant.lastLongitude ?: return@forEach
+                    val point = GeoPoint(lat, lon)
+                    fitPoints += point
+                    val selected = participant.boatId == selectedBoatId
+                    if (selected) {
+                        selectedPoint = point
                     }
-                )
-            }
+                    mapView.overlays.add(
+                        Marker(mapView).apply {
+                            position = point
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            icon = createBoatMarkerDrawable(
+                                sizePx = if (selected) 44 else 28,
+                                color = if (selected) android.graphics.Color.YELLOW else android.graphics.Color.CYAN
+                            )
+                            title = participant.boatName
+                            subDescription = participant.lastSpeedKnots?.let {
+                                String.format(Locale.US, "%.1f kn", it)
+                            } ?: "-- kn"
+                        }
+                    )
+                }
 
-            when {
-                selectedPoint != null -> {
-                    mapView.controller.setCenter(selectedPoint)
-                    mapView.controller.setZoom(18.0)
+                if (!hasMapData && fallbackPoint != null) {
+                    mapView.overlays.add(
+                        Marker(mapView).apply {
+                            position = fallbackPoint
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            icon = createBoatMarkerDrawable(
+                                sizePx = 30,
+                                color = android.graphics.Color.rgb(76, 175, 80)
+                            )
+                            title = "Your phone"
+                        }
+                    )
                 }
-                boundsPoints.size >= 2 -> {
-                    mapView.zoomToBoundingBox(BoundingBox.fromGeoPointsSafe(boundsPoints), true, 48)
+
+                when {
+                    selectedPoint != null -> {
+                        mapView.controller.setCenter(selectedPoint)
+                        mapView.controller.setZoom(18.0)
+                    }
+                    !hasAutoFitted && fitPoints.size >= 2 && mapView.width > 0 && mapView.height > 0 -> {
+                        mapView.zoomToBoundingBox(BoundingBox.fromGeoPointsSafe(fitPoints), true, 80)
+                        hasAutoFitted = true
+                    }
+                    fitPoints.size == 1 -> {
+                        mapView.controller.setCenter(fitPoints.first())
+                        mapView.controller.setZoom(17.0)
+                    }
+                    !hasMapData && fallbackPoint != null -> {
+                        mapView.controller.setCenter(fallbackPoint)
+                        mapView.controller.setZoom(16.0)
+                    }
                 }
-                boundsPoints.size == 1 -> {
-                    mapView.controller.setCenter(boundsPoints.first())
-                    mapView.controller.setZoom(17.0)
-                }
+                mapView.invalidate()
             }
-            mapView.invalidate()
+        )
+        if (!hasMapData) {
+            Text(
+                text = if (fallbackCenter != null) {
+                    "No race map data yet - showing your location."
+                } else {
+                    "No map data yet"
+                },
+                color = Color(0xFFB0BEC5),
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
-    )
+    }
 }
 
 private fun createBoatMarkerDrawable(sizePx: Int, color: Int): ShapeDrawable {
@@ -3872,6 +3968,7 @@ private const val MAX_GPS_SAMPLE_AGE_MS =
 private const val ANCHOR_SET_AVERAGE_SECONDS = 10L
 private const val ANCHOR_TRACK_LOG_INTERVAL_MS = 30_000L
 private const val RACE_TRACK_LOG_INTERVAL_MS = 10_000L
+private const val REGATTA_PRESTART_TRACK_INTERVAL_MS = 2_000L
 private const val RACE_TRACK_HEADING_CHANGE_DEG = 10.0
 private const val RACE_TRACK_MIN_MOVE_FOR_HEADING_M = 5.0
 private const val NAS_INTERNET_SYNC_INTERVAL_MS = 30_000L
@@ -4325,7 +4422,9 @@ private fun AppHeader(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (
                     currentScreen == AppScreen.Main ||
-                    currentScreen == AppScreen.WindShift
+                    currentScreen == AppScreen.WindShift ||
+                    currentScreen == AppScreen.RaceStartLine ||
+                    currentScreen == AppScreen.RaceMap
                 ) {
                     val speedLabel = averageTrueSpeedKnots?.let {
                         String.format(Locale.US, "%.1f kn", it)
@@ -4364,6 +4463,13 @@ private fun AppHeader(
                                 text = { Text("Race Map") },
                                 onClick = {
                                     onScreenSelected(AppScreen.RaceMap)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Login regatta") },
+                                onClick = {
+                                    onScreenSelected(AppScreen.Regatta)
                                     onMenuExpandedChange(false)
                                 }
                             )
@@ -5003,30 +5109,34 @@ private fun StartLineMap(
     mapMode: MapMode,
     mapRenderMode: MapRenderMode,
     mapZoom: Float,
+    singleTapControls: Boolean = false,
     onToggleMapMode: () -> Unit,
     /** Dvostruki tap lijevo-dolje: Canvas ↔ OSM samo kad je North up. */
     onToggleCanvasOsmFromMap: () -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit
 ) {
-    val canvasMapGestures = Modifier.pointerInput(mapMode, mapZoom, mapRenderMode) {
-        detectTapGestures(
-            onDoubleTap = { tap ->
-                val w = size.width.toFloat()
-                val h = size.height.toFloat()
-                val topHalf = tap.y < h / 2f
-                val bottomHalf = !topHalf
-                val rightHalf = tap.x >= w / 2f
-                val leftHalf = tap.x < w / 2f
+    val handleCornerTap: (Offset, androidx.compose.ui.unit.IntSize) -> Unit = { tap, size ->
+        val w = size.width.toFloat()
+        val h = size.height.toFloat()
+        val topHalf = tap.y < h / 2f
+        val bottomHalf = !topHalf
+        val rightHalf = tap.x >= w / 2f
+        val leftHalf = tap.x < w / 2f
 
-                when {
-                    topHalf && leftHalf -> onToggleMapMode()
-                    topHalf && rightHalf -> onZoomIn()
-                    bottomHalf && rightHalf -> onZoomOut()
-                    bottomHalf && leftHalf -> onToggleCanvasOsmFromMap()
-                }
-            }
-        )
+        when {
+            topHalf && leftHalf -> onToggleMapMode()
+            topHalf && rightHalf -> onZoomIn()
+            bottomHalf && rightHalf -> onZoomOut()
+            bottomHalf && leftHalf -> onToggleCanvasOsmFromMap()
+        }
+    }
+    val canvasMapGestures = Modifier.pointerInput(mapMode, mapZoom, mapRenderMode) {
+        if (singleTapControls) {
+            detectTapGestures(onTap = { tap -> handleCornerTap(tap, size) })
+        } else {
+            detectTapGestures(onDoubleTap = { tap -> handleCornerTap(tap, size) })
+        }
     }
     Box(
         modifier = Modifier
@@ -5041,7 +5151,7 @@ private fun StartLineMap(
 
             val refLat = leftBuoyLocation?.latitude ?: currentLocation?.latitude
             if (refLat == null) {
-                drawMapHint(this, "Postavi bove za prikaz linije")
+                drawMapHint(this, "Set buoys to display the line")
                 return@Canvas
             }
 
@@ -5173,13 +5283,17 @@ private fun StartLineMap(
                     },
                     update = { mapView ->
                         val cornerMap = mapView as CornerDoubleTapMapView
-                        cornerMap.onCornerDoubleTap = { topHalf, leftHalf ->
-                            when {
-                                topHalf && leftHalf -> onToggleMapMode()
-                                topHalf && !leftHalf -> onZoomIn()
-                                !topHalf && !leftHalf -> onZoomOut()
-                                !topHalf && leftHalf -> onToggleCanvasOsmFromMap()
+                        cornerMap.onCornerDoubleTap = if (!singleTapControls) {
+                            { topHalf, leftHalf ->
+                                when {
+                                    topHalf && leftHalf -> onToggleMapMode()
+                                    topHalf && !leftHalf -> onZoomIn()
+                                    !topHalf && !leftHalf -> onZoomOut()
+                                    !topHalf && leftHalf -> onToggleCanvasOsmFromMap()
+                                }
                             }
+                        } else {
+                            null
                         }
                         val centerLocation = when {
                             leftBuoyLocation != null && rightBuoyLocation != null -> {
@@ -5258,7 +5372,7 @@ private fun StartLineMap(
                             val boatMarker = Marker(mapView).apply {
                                 position = GeoPoint(boat.latitude, boat.longitude)
                                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                                title = "Brod"
+                                title = "Boat"
                             }
                             mapView.overlays.add(boatMarker)
                         }
@@ -5266,6 +5380,15 @@ private fun StartLineMap(
                         mapView.invalidate()
                     }
                 )
+                if (singleTapControls) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(mapMode, mapZoom, mapRenderMode, singleTapControls) {
+                                detectTapGestures(onTap = { tap -> handleCornerTap(tap, size) })
+                            }
+                    )
+                }
                 val zoomHintStyle = androidx.compose.material3.LocalTextStyle.current.copy(
                     color = Color.White,
                     fontSize = 40.sp,
@@ -5786,7 +5909,7 @@ private fun WindShiftDeviationGraph(
             val visiblePoints = sorted.filter { it.timestampMs >= windowStart }
             if (visiblePoints.size < 2) {
                 drawContext.canvas.nativeCanvas.drawText(
-                    "Nema dovoljno podataka za ${graphWindowMinutes} min",
+                    "Not enough data for ${graphWindowMinutes} min",
                     20f,
                     size.height / 2f,
                     labelPaint.apply { textSize = 30f * textScale }
@@ -5946,7 +6069,7 @@ private fun WindShiftTrackGraph(
             drawContext.canvas.nativeCanvas.drawText("-", rightLabelX, size.height * 0.75f, controlsPaint)
             if (samples.size < 2) {
                 drawContext.canvas.nativeCanvas.drawText(
-                    "Nema dovoljno podataka za track",
+                    "Not enough data for track",
                     20f,
                     size.height / 2f,
                     android.graphics.Paint().apply {
@@ -5966,7 +6089,7 @@ private fun WindShiftTrackGraph(
 
             if (historySamples.size < 2) {
                 drawContext.canvas.nativeCanvas.drawText(
-                    "Nema dovoljno podataka u zadnjih ${historyMinutes} min",
+                    "Not enough data in last ${historyMinutes} min",
                     20f,
                     size.height / 2f,
                     android.graphics.Paint().apply {

@@ -141,7 +141,7 @@ def init_db() -> None:
             text(
                 """
                 ALTER TABLE regatta_events
-                ADD COLUMN IF NOT EXISTS race_end_time VARCHAR(5) NOT NULL DEFAULT '18:00';
+                DROP COLUMN IF EXISTS race_end_time;
                 """
             )
         )
@@ -149,7 +149,7 @@ def init_db() -> None:
             text(
                 """
                 ALTER TABLE regatta_events
-                ADD COLUMN IF NOT EXISTS regatta_length_nm DOUBLE PRECISION NOT NULL DEFAULT 0;
+                DROP COLUMN IF EXISTS regatta_length_nm;
                 """
             )
         )
@@ -276,6 +276,7 @@ def init_db() -> None:
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     event_id UUID NOT NULL REFERENCES regatta_events(id) ON DELETE CASCADE,
                     device_id VARCHAR(128) NULL,
+                    boat_code VARCHAR(4) NULL,
                     boat_name VARCHAR(200) NOT NULL,
                     skipper_name VARCHAR(200) NOT NULL DEFAULT '',
                     club_name VARCHAR(200) NOT NULL DEFAULT '',
@@ -287,6 +288,76 @@ def init_db() -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                ALTER TABLE regatta_boat_entries
+                ADD COLUMN IF NOT EXISTS boat_code VARCHAR(4) NULL;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_regatta_boat_entries_event_boat_code
+                ON regatta_boat_entries (event_id, boat_code)
+                WHERE boat_code IS NOT NULL AND boat_code <> '';
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                DELETE FROM regatta_boat_entries
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY event_id, device_id
+                                   ORDER BY created_at DESC, id DESC
+                               ) AS rn
+                        FROM regatta_boat_entries
+                        WHERE device_id IS NOT NULL AND device_id <> ''
+                    ) dedupe
+                    WHERE rn > 1
+                );
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_regatta_boat_entries_event_device
+                ON regatta_boat_entries (event_id, device_id)
+                WHERE device_id IS NOT NULL AND device_id <> '';
+                """
+            )
+        )
+        boats_without_code = conn.execute(
+            text(
+                """
+                SELECT id, event_id
+                FROM regatta_boat_entries
+                WHERE boat_code IS NULL
+                   OR boat_code = ''
+                   OR boat_code !~ '^[0-9]{3}$'
+                """
+            )
+        ).fetchall()
+        for boat_id, event_id in boats_without_code:
+            conn.execute(
+                text(
+                    """
+                    UPDATE regatta_boat_entries
+                    SET boat_code = :boat_code
+                    WHERE id = :boat_id
+                    """
+                ),
+                {
+                    "boat_id": boat_id,
+                    "boat_code": generate_boat_code(conn, event_id),
+                },
+            )
         conn.execute(
             text(
                 """
@@ -501,8 +572,6 @@ class RegattaCreateRequest(BaseModel):
     organizer_name: str = ""
     start_date: str
     end_date: str
-    race_end_time: str
-    regatta_length_nm: float
     is_public: bool = False
     max_boats: int = 50
 
@@ -521,12 +590,10 @@ class AdminEventUpdateRequest(BaseModel):
     is_public: bool | None = None
     start_date: str | None = None
     end_date: str | None = None
-    race_end_time: str | None = None
-    regatta_length_nm: float | None = None
 
 
 class RegattaOrganizerAuthRequest(BaseModel):
-    join_code: str
+    join_code: str | None = None
     organizer_code: str
 
 
@@ -541,6 +608,11 @@ class RegattaJoinRequest(BaseModel):
     group_code: str | None = None
 
 
+class RegattaJoinPrefillRequest(BaseModel):
+    join_code: str
+    device_id: str
+
+
 class RegattaEventUpdateRequest(BaseModel):
     organizer_token: str
     name: str
@@ -549,8 +621,6 @@ class RegattaEventUpdateRequest(BaseModel):
     organizer_code: str
     start_date: str
     end_date: str
-    race_end_time: str
-    regatta_length_nm: float
     max_boats: int
     is_public: bool
 
@@ -669,6 +739,26 @@ def normalize_join_code(raw: str) -> str:
 def normalize_organizer_code(raw: str) -> str:
     cleaned = raw.strip().upper()
     return cleaned or secrets.token_hex(4).upper()
+
+
+def generate_boat_code(conn, event_id: uuid.UUID) -> str:
+    used_codes = conn.execute(
+        text(
+            """
+            SELECT boat_code
+            FROM regatta_boat_entries
+            WHERE event_id = :event_id
+              AND boat_code ~ '^[0-9]{3}$'
+            """
+        ),
+        {"event_id": event_id},
+    ).fetchall()
+    used = {int(str(row[0])) for row in used_codes if row and row[0]}
+    available = [code for code in range(1, 1000) if code not in used]
+    if not available:
+        raise HTTPException(409, "REGATTA_FULL")
+    selected = secrets.choice(available)
+    return f"{selected:03d}"
 
 
 def hash_secret(raw: str) -> str:
@@ -1082,13 +1172,9 @@ def get_telemetry_latest(ship_code: str) -> dict[str, Any]:
 @app.post("/v1/regattas/events", dependencies=[Depends(require_api_key)])
 def create_regatta_event(body: RegattaCreateRequest) -> dict[str, Any]:
     if not body.name.strip():
-        raise HTTPException(400, "Event name required")
+        raise HTTPException(400, "Regatta name required")
     start_date = parse_iso_date(body.start_date, "start_date")
     end_date = parse_iso_date(body.end_date, "end_date")
-    race_end_time = parse_hh_mm(body.race_end_time, "race_end_time")
-    regatta_length_nm = float(body.regatta_length_nm)
-    if regatta_length_nm <= 0.0:
-        raise HTTPException(400, "regatta_length_nm must be greater than 0")
     if end_date < start_date:
         raise HTTPException(400, "end_date must be on or after start_date")
     with SessionLocal() as session:
@@ -1102,13 +1188,12 @@ def create_regatta_event(body: RegattaCreateRequest) -> dict[str, Any]:
                 """
                 INSERT INTO regatta_events (
                     id, name, join_code, organizer_code_hash, organizer_name,
-                    start_date, end_date, race_end_time, regatta_length_nm,
+                    start_date, end_date,
                     is_public, max_boats, notice_board, notice_board_updated_at, status, active_race_id, created_at, updated_at
                 )
                 VALUES (
                     :id, :name, :join_code, :organizer_code_hash, :organizer_name,
                     CAST(:start_date AS date), CAST(:end_date AS date),
-                    :race_end_time, :regatta_length_nm,
                     :is_public, :max_boats, '', NULL, 'draft',
                     :active_race_id, :created_at, :updated_at
                 )
@@ -1122,8 +1207,6 @@ def create_regatta_event(body: RegattaCreateRequest) -> dict[str, Any]:
                 "organizer_name": body.organizer_name.strip(),
                 "start_date": start_date,
                 "end_date": end_date,
-                "race_end_time": race_end_time,
-                "regatta_length_nm": regatta_length_nm,
                 "is_public": bool(body.is_public),
                 "max_boats": max(1, int(body.max_boats)),
                 "active_race_id": race_id,
@@ -1160,8 +1243,6 @@ def create_regatta_event(body: RegattaCreateRequest) -> dict[str, Any]:
         "organizer_token": organizer_token,
         "start_date": start_date,
         "end_date": end_date,
-        "race_end_time": race_end_time,
-        "regatta_length_nm": regatta_length_nm,
         "is_public": bool(body.is_public),
         "max_boats": max(1, int(body.max_boats)),
     }
@@ -1221,15 +1302,6 @@ def admin_update_regatta_event(event_id: str, body: AdminEventUpdateRequest) -> 
         if body.end_date is not None:
             updates.append("end_date = CAST(:end_date AS date)")
             params["end_date"] = parse_iso_date(body.end_date, "end_date")
-        if body.race_end_time is not None:
-            updates.append("race_end_time = :race_end_time")
-            params["race_end_time"] = parse_hh_mm(body.race_end_time, "race_end_time")
-        if body.regatta_length_nm is not None:
-            regatta_length_nm = float(body.regatta_length_nm)
-            if regatta_length_nm <= 0.0:
-                raise HTTPException(400, "regatta_length_nm must be greater than 0")
-            updates.append("regatta_length_nm = :regatta_length_nm")
-            params["regatta_length_nm"] = regatta_length_nm
         start_for_validation = params.get("start_date")
         end_for_validation = params.get("end_date")
         if start_for_validation is None or end_for_validation is None:
@@ -1245,7 +1317,7 @@ def admin_update_regatta_event(event_id: str, body: AdminEventUpdateRequest) -> 
                 {"event_id": event_id},
             ).fetchone()
             if not current_dates:
-                raise HTTPException(404, "Event not found")
+                raise HTTPException(404, "Regatta not found")
             if start_for_validation is None and current_dates[0] is not None:
                 start_for_validation = current_dates[0].isoformat()
             if end_for_validation is None and current_dates[1] is not None:
@@ -1270,7 +1342,7 @@ def admin_update_regatta_event(event_id: str, body: AdminEventUpdateRequest) -> 
             params,
         )
         if result.rowcount == 0:
-            raise HTTPException(404, "Event not found")
+            raise HTTPException(404, "Regatta not found")
         session.commit()
     return {"ok": True}
 
@@ -1283,7 +1355,7 @@ def admin_list_regatta_events(superuser_token: str) -> dict[str, Any]:
             text(
                 """
                 SELECT e.id, e.name, e.join_code, e.organizer_code_hash, e.organizer_name, e.status, e.is_public,
-                       e.start_date, e.end_date, e.race_end_time, e.regatta_length_nm, e.updated_at,
+                       e.start_date, e.end_date, e.updated_at,
                        COUNT(DISTINCT b.id) AS boats_count,
                        COUNT(DISTINCT r.id) AS races_count,
                        COUNT(DISTINCT ce.id) AS points_count
@@ -1293,7 +1365,7 @@ def admin_list_regatta_events(superuser_token: str) -> dict[str, Any]:
                 LEFT JOIN regatta_crossing_events ce ON ce.race_id = r.id
                 GROUP BY
                     e.id, e.name, e.join_code, e.organizer_code_hash, e.organizer_name, e.status, e.is_public,
-                    e.start_date, e.end_date, e.race_end_time, e.regatta_length_nm, e.updated_at, e.created_at
+                    e.start_date, e.end_date, e.updated_at, e.created_at
                 ORDER BY e.start_date DESC NULLS LAST, e.updated_at DESC, e.created_at DESC
                 LIMIT 500
                 """
@@ -1312,12 +1384,10 @@ def admin_list_regatta_events(superuser_token: str) -> dict[str, Any]:
                 "is_public": bool(row[6]),
                 "start_date": row[7].isoformat() if row[7] else "",
                 "end_date": row[8].isoformat() if row[8] else "",
-                "race_end_time": row[9] or "",
-                "regatta_length_nm": float(row[10] or 0.0),
-                "updated_at": row[11].isoformat() if row[11] else "",
-                "boats_count": int(row[12] or 0),
-                "races_count": int(row[13] or 0),
-                "points_count": int(row[14] or 0),
+                "updated_at": row[9].isoformat() if row[9] else "",
+                "boats_count": int(row[10] or 0),
+                "races_count": int(row[11] or 0),
+                "points_count": int(row[12] or 0),
             }
             for row in rows
         ],
@@ -1333,7 +1403,7 @@ def admin_delete_regatta_event(event_id: str, superuser_token: str) -> dict[str,
             {"event_id": event_id},
         )
         if deleted.rowcount == 0:
-            raise HTTPException(404, "Event not found")
+            raise HTTPException(404, "Regatta not found")
         session.commit()
     return {"ok": True}
 
@@ -1354,7 +1424,7 @@ def admin_create_organizer_session(event_id: str, superuser_token: str) -> dict[
             {"event_id": event_id},
         ).fetchone()
         if not row:
-            raise HTTPException(404, "Event not found")
+            raise HTTPException(404, "Regatta not found")
         organizer_token = create_organizer_session(session, row[0])
         session.commit()
     return {"ok": True, "event_id": str(row[0]), "organizer_token": organizer_token}
@@ -1362,23 +1432,42 @@ def admin_create_organizer_session(event_id: str, superuser_token: str) -> dict[
 
 @app.post("/v1/regattas/events/organizer-auth", dependencies=[Depends(require_api_key)])
 def authenticate_regatta_organizer(body: RegattaOrganizerAuthRequest) -> dict[str, Any]:
-    if not body.join_code.strip() or not body.organizer_code.strip():
-        raise HTTPException(400, "join_code and organizer_code required")
+    organizer_code = body.organizer_code.strip()
+    join_code = (body.join_code or "").strip()
+    if not organizer_code:
+        raise HTTPException(400, "organizer_code required")
+    code_hash = hash_secret(organizer_code)
     with SessionLocal() as session:
-        event = session.execute(
-            text(
-                """
-                SELECT id, organizer_code_hash
-                FROM regatta_events
-                WHERE upper(join_code) = upper(:join_code)
-                """
-            ),
-            {"join_code": body.join_code.strip()},
-        ).fetchone()
-        if not event:
-            raise HTTPException(404, "Event not found for join code")
-        if (event[1] or "") != hash_secret(body.organizer_code):
-            raise HTTPException(403, "Invalid organizer code")
+        if join_code:
+            event = session.execute(
+                text(
+                    """
+                    SELECT id, organizer_code_hash
+                    FROM regatta_events
+                    WHERE upper(join_code) = upper(:join_code)
+                    """
+                ),
+                {"join_code": join_code},
+            ).fetchone()
+            if not event:
+                raise HTTPException(404, "Regatta not found")
+            if (event[1] or "") != code_hash:
+                raise HTTPException(403, "Invalid organizer code")
+        else:
+            event = session.execute(
+                text(
+                    """
+                    SELECT id, organizer_code_hash
+                    FROM regatta_events
+                    WHERE organizer_code_hash = :code_hash
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """
+                ),
+                {"code_hash": code_hash},
+            ).fetchone()
+            if not event:
+                raise HTTPException(404, "Regatta not found for organizer code")
         organizer_token = create_organizer_session(session, event[0])
         session.commit()
     return {
@@ -1425,7 +1514,7 @@ def list_public_regatta_events() -> dict[str, Any]:
             text(
                 """
                 SELECT e.id, e.name, e.join_code, e.organizer_name, e.status, e.start_date, e.end_date,
-                       e.race_end_time, e.regatta_length_nm, e.updated_at,
+                       e.updated_at,
                        COUNT(DISTINCT b.id) AS boats_count,
                        COUNT(DISTINCT r.id) AS races_count,
                        COUNT(DISTINCT ce.id) AS points_count
@@ -1451,15 +1540,64 @@ def list_public_regatta_events() -> dict[str, Any]:
                 "status": row[4],
                 "start_date": row[5].isoformat() if row[5] else "",
                 "end_date": row[6].isoformat() if row[6] else "",
-                "race_end_time": row[7] or "",
-                "regatta_length_nm": float(row[8] or 0.0),
-                "updated_at": row[9].isoformat() if row[9] else "",
-                "boats_count": int(row[10] or 0),
-                "races_count": int(row[11] or 0),
-                "points_count": int(row[12] or 0),
+                "updated_at": row[7].isoformat() if row[7] else "",
+                "boats_count": int(row[8] or 0),
+                "races_count": int(row[9] or 0),
+                "points_count": int(row[10] or 0),
             }
             for row in rows
         ],
+    }
+
+
+@app.post("/v1/regattas/events/join-prefill", dependencies=[Depends(require_api_key)])
+def get_regatta_join_prefill(body: RegattaJoinPrefillRequest) -> dict[str, Any]:
+    join_code = body.join_code.strip()
+    device_id = body.device_id.strip()
+    if not join_code:
+        raise HTTPException(400, "join_code required")
+    if not device_id:
+        raise HTTPException(400, "device_id required")
+    with SessionLocal() as session:
+        event = session.execute(
+            text(
+                """
+                SELECT id, active_race_id
+                FROM regatta_events
+                WHERE upper(join_code) = upper(:join_code)
+                """
+            ),
+            {"join_code": join_code},
+        ).fetchone()
+        if not event:
+            raise HTTPException(404, "Regatta not found for join code")
+        event_id, race_id = event[0], event[1]
+        boat = session.execute(
+            text(
+                """
+                SELECT id, boat_code, boat_name, skipper_name, club_name, length_value, length_unit
+                FROM regatta_boat_entries
+                WHERE event_id = :event_id
+                  AND device_id = :device_id
+                LIMIT 1
+                """
+            ),
+            {"event_id": event_id, "device_id": device_id},
+        ).fetchone()
+    if not boat:
+        return {"ok": True, "found": False}
+    return {
+        "ok": True,
+        "found": True,
+        "event_id": str(event_id),
+        "race_id": str(race_id) if race_id else "",
+        "boat_id": str(boat[0]),
+        "boat_code": boat[1] or "",
+        "boat_name": boat[2] or "",
+        "skipper_name": boat[3] or "",
+        "club_name": boat[4] or "",
+        "length_value": boat[5],
+        "length_unit": boat[6] or "",
     }
 
 
@@ -1467,6 +1605,8 @@ def list_public_regatta_events() -> dict[str, Any]:
 def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
     if not body.join_code.strip():
         raise HTTPException(400, "join_code required")
+    if not body.device_id.strip():
+        raise HTTPException(400, "device_id required")
     if not body.boat_name.strip():
         raise HTTPException(400, "boat_name required")
     with SessionLocal() as session:
@@ -1481,26 +1621,24 @@ def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
             {"join_code": body.join_code.strip()},
         ).fetchone()
         if not event:
-            raise HTTPException(404, "Event not found for join code")
+            raise HTTPException(404, "Regatta not found for join code")
         event_id, race_id, max_boats = event[0], event[1], int(event[2] or 0)
         boat_name = body.boat_name.strip()
         skipper_name = body.skipper_name.strip()
+        device_id = body.device_id.strip()
         existing = session.execute(
             text(
                 """
-                SELECT id
+                SELECT id, boat_code
                 FROM regatta_boat_entries
                 WHERE event_id = :event_id
-                  AND upper(boat_name) = upper(:boat_name)
-                  AND upper(skipper_name) = upper(:skipper_name)
-                ORDER BY created_at ASC
+                  AND device_id = :device_id
                 LIMIT 1
                 """
             ),
             {
                 "event_id": event_id,
-                "boat_name": boat_name,
-                "skipper_name": skipper_name,
+                "device_id": device_id,
             },
         ).fetchone()
         if not existing:
@@ -1519,38 +1657,20 @@ def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
                 raise HTTPException(409, "REGATTA_FULL")
         if existing:
             boat_id = existing[0]
-            activity = None
-            if race_id:
-                activity = session.execute(
-                    text(
-                        """
-                        SELECT MAX(ts) FROM (
-                            SELECT MAX(sp.created_at) AS ts
-                            FROM regatta_signal_points sp
-                            WHERE sp.race_id = :race_id AND sp.boat_id = :boat_id
-                            UNION ALL
-                            SELECT MAX(tp.created_at) AS ts
-                            FROM regatta_track_points tp
-                            WHERE tp.race_id = :race_id AND tp.boat_id = :boat_id
-                            UNION ALL
-                            SELECT MAX(ce.created_at) AS ts
-                            FROM regatta_crossing_events ce
-                            WHERE ce.race_id = :race_id AND ce.boat_id = :boat_id
-                        ) q
-                        """
-                    ),
-                    {"race_id": race_id, "boat_id": boat_id},
-                ).fetchone()
-            last_activity = activity[0] if activity else None
-            if last_activity is not None:
-                inactive_for = (datetime.now(timezone.utc) - last_activity).total_seconds()
-                if inactive_for < 15 * 60:
-                    raise HTTPException(409, "Boat is already active on another device")
+            existing_boat_code = (existing[1] or "").strip()
+            boat_code = (
+                existing_boat_code
+                if len(existing_boat_code) == 3 and existing_boat_code.isdigit()
+                else generate_boat_code(session, event_id)
+            )
             session.execute(
                 text(
                     """
                     UPDATE regatta_boat_entries
                     SET device_id = :device_id,
+                        boat_code = :boat_code,
+                        boat_name = :boat_name,
+                        skipper_name = :skipper_name,
                         club_name = :club_name,
                         length_value = :length_value,
                         length_unit = :length_unit,
@@ -1560,7 +1680,10 @@ def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
                 ),
                 {
                     "boat_id": boat_id,
-                    "device_id": body.device_id.strip(),
+                    "device_id": device_id,
+                    "boat_code": boat_code,
+                    "boat_name": boat_name,
+                    "skipper_name": skipper_name,
                     "club_name": body.club_name.strip(),
                     "length_value": body.length_value,
                     "length_unit": (body.length_unit or "").strip() or None,
@@ -1569,15 +1692,16 @@ def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
             )
         else:
             boat_id = uuid.uuid4()
+            boat_code = generate_boat_code(session, event_id)
             session.execute(
                 text(
                     """
                     INSERT INTO regatta_boat_entries (
-                        id, event_id, device_id, boat_name, skipper_name, club_name,
+                        id, event_id, device_id, boat_code, boat_name, skipper_name, club_name,
                         length_value, length_unit, group_code
                     )
                     VALUES (
-                        :id, :event_id, :device_id, :boat_name, :skipper_name, :club_name,
+                        :id, :event_id, :device_id, :boat_code, :boat_name, :skipper_name, :club_name,
                         :length_value, :length_unit, :group_code
                     )
                     """
@@ -1585,7 +1709,8 @@ def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
                 {
                     "id": boat_id,
                     "event_id": event_id,
-                    "device_id": body.device_id.strip(),
+                    "device_id": device_id,
+                    "boat_code": boat_code,
                     "boat_name": boat_name,
                     "skipper_name": skipper_name,
                     "club_name": body.club_name.strip(),
@@ -1611,6 +1736,7 @@ def join_regatta_event(body: RegattaJoinRequest) -> dict[str, Any]:
         "event_id": str(event_id),
         "race_id": str(race_id) if race_id else "",
         "boat_id": str(boat_id),
+        "boat_code": boat_code,
     }
 
 
@@ -1620,7 +1746,7 @@ def get_regatta_event_snapshot(event_id: str) -> dict[str, Any]:
         event = session.execute(
             text(
                 """
-                SELECT id, name, join_code, organizer_name, start_date, end_date, race_end_time, regatta_length_nm,
+                SELECT id, name, join_code, organizer_name, start_date, end_date,
                        is_public, max_boats,
                        COALESCE(notice_board, ''), notice_board_updated_at, status, active_race_id
                 FROM regatta_events
@@ -1630,11 +1756,11 @@ def get_regatta_event_snapshot(event_id: str) -> dict[str, Any]:
             {"event_id": event_id},
         ).fetchone()
         if not event:
-            raise HTTPException(404, "Event not found")
+            raise HTTPException(404, "Regatta not found")
         boats = session.execute(
             text(
                 """
-                SELECT id, device_id, boat_name, skipper_name, club_name, length_value, length_unit, group_code
+                SELECT id, device_id, boat_code, boat_name, skipper_name, club_name, length_value, length_unit, group_code
                 FROM regatta_boat_entries
                 WHERE event_id = CAST(:event_id AS uuid)
                 ORDER BY created_at, boat_name
@@ -1680,25 +1806,24 @@ def get_regatta_event_snapshot(event_id: str) -> dict[str, Any]:
         "organizer_name": event[3],
         "start_date": event[4].isoformat() if event[4] else "",
         "end_date": event[5].isoformat() if event[5] else "",
-        "race_end_time": event[6] or "",
-        "regatta_length_nm": float(event[7] or 0.0),
-        "is_public": bool(event[8]),
-        "max_boats": int(event[9] or 0),
-        "notice_board": event[10] or "",
-        "notice_board_updated_at": event[11].isoformat() if event[11] else "",
+        "is_public": bool(event[6]),
+        "max_boats": int(event[7] or 0),
+        "notice_board": event[8] or "",
+        "notice_board_updated_at": event[9].isoformat() if event[9] else "",
         "notice_posts": notice_posts,
-        "status": event[12],
-        "active_race_id": str(event[13]) if event[13] else "",
+        "status": event[10],
+        "active_race_id": str(event[11]) if event[11] else "",
         "boats": [
             {
                 "id": str(row[0]),
                 "device_id": row[1] or "",
-                "boat_name": row[2],
-                "skipper_name": row[3],
-                "club_name": row[4],
-                "length_value": row[5],
-                "length_unit": row[6] or "",
-                "group_code": row[7] or "",
+                "boat_code": row[2] or "",
+                "boat_name": row[3],
+                "skipper_name": row[4],
+                "club_name": row[5],
+                "length_value": row[6],
+                "length_unit": row[7] or "",
+                "group_code": row[8] or "",
             }
             for row in boats
         ],
@@ -1834,6 +1959,58 @@ def update_regatta_notice_board(event_id: str, body: RegattaNoticeBoardUpdateReq
     return {"ok": True}
 
 
+@app.delete("/v1/regattas/events/{event_id}/notice-posts/{notice_id}", dependencies=[Depends(require_api_key)])
+def delete_regatta_notice_post(event_id: str, notice_id: str, organizer_token: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        require_event_organizer(session, event_id, organizer_token)
+        result = session.execute(
+            text(
+                """
+                DELETE FROM regatta_notice_posts
+                WHERE id = CAST(:notice_id AS uuid)
+                  AND event_id = CAST(:event_id AS uuid)
+                """
+            ),
+            {
+                "notice_id": notice_id,
+                "event_id": event_id,
+            },
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, "Notice not found")
+
+        latest_notice = session.execute(
+            text(
+                """
+                SELECT notice_text, published_at
+                FROM regatta_notice_posts
+                WHERE event_id = CAST(:event_id AS uuid)
+                ORDER BY published_at DESC
+                LIMIT 1
+                """
+            ),
+            {"event_id": event_id},
+        ).fetchone()
+        session.execute(
+            text(
+                """
+                UPDATE regatta_events
+                SET notice_board = :notice_board,
+                    notice_board_updated_at = :notice_board_updated_at,
+                    updated_at = NOW()
+                WHERE id = CAST(:event_id AS uuid)
+                """
+            ),
+            {
+                "event_id": event_id,
+                "notice_board": (latest_notice[0] if latest_notice else "") or "",
+                "notice_board_updated_at": latest_notice[1] if latest_notice else None,
+            },
+        )
+        session.commit()
+    return {"ok": True}
+
+
 @app.put("/v1/regattas/events/{event_id}", dependencies=[Depends(require_api_key)])
 def update_regatta_event(event_id: str, body: RegattaEventUpdateRequest) -> dict[str, Any]:
     if not body.name.strip():
@@ -1842,10 +2019,6 @@ def update_regatta_event(event_id: str, body: RegattaEventUpdateRequest) -> dict
     end_date = parse_iso_date(body.end_date, "end_date")
     if end_date < start_date:
         raise HTTPException(400, "end_date must be on or after start_date")
-    race_end_time = parse_hh_mm(body.race_end_time, "race_end_time")
-    regatta_length_nm = float(body.regatta_length_nm)
-    if regatta_length_nm <= 0.0:
-        raise HTTPException(400, "regatta_length_nm must be greater than 0")
     max_boats = max(1, int(body.max_boats))
     join_code = normalize_join_code(body.join_code)
     organizer_code_hash = hash_secret(normalize_organizer_code(body.organizer_code))
@@ -1861,8 +2034,6 @@ def update_regatta_event(event_id: str, body: RegattaEventUpdateRequest) -> dict
                     organizer_code_hash = :organizer_code_hash,
                     start_date = CAST(:start_date AS date),
                     end_date = CAST(:end_date AS date),
-                    race_end_time = :race_end_time,
-                    regatta_length_nm = :regatta_length_nm,
                     max_boats = :max_boats,
                     is_public = :is_public,
                     updated_at = NOW()
@@ -1877,14 +2048,12 @@ def update_regatta_event(event_id: str, body: RegattaEventUpdateRequest) -> dict
                 "organizer_code_hash": organizer_code_hash,
                 "start_date": start_date,
                 "end_date": end_date,
-                "race_end_time": race_end_time,
-                "regatta_length_nm": regatta_length_nm,
                 "max_boats": max_boats,
                 "is_public": bool(body.is_public),
             },
         )
         if result.rowcount == 0:
-            raise HTTPException(404, "Event not found")
+            raise HTTPException(404, "Regatta not found")
         session.commit()
     return {"ok": True}
 
@@ -1905,6 +2074,84 @@ def delete_regatta_boat(event_id: str, boat_id: str, organizer_token: str) -> di
         )
         if result.rowcount == 0:
             raise HTTPException(404, "Boat not found for this regatta")
+        session.commit()
+    return {"ok": True}
+
+
+@app.delete("/v1/regattas/races/{race_id}", dependencies=[Depends(require_api_key)])
+def delete_regatta_race(race_id: str, organizer_token: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        event_id = get_race_event_id(session, race_id)
+        require_event_organizer(session, str(event_id), organizer_token)
+        session.execute(
+            text("DELETE FROM regatta_signal_points WHERE race_id = CAST(:race_id AS uuid)"),
+            {"race_id": race_id},
+        )
+        session.execute(
+            text("DELETE FROM regatta_track_points WHERE race_id = CAST(:race_id AS uuid)"),
+            {"race_id": race_id},
+        )
+        session.execute(
+            text("DELETE FROM regatta_crossing_events WHERE race_id = CAST(:race_id AS uuid)"),
+            {"race_id": race_id},
+        )
+        session.execute(
+            text("DELETE FROM regatta_penalties WHERE race_id = CAST(:race_id AS uuid)"),
+            {"race_id": race_id},
+        )
+        session.execute(
+            text("DELETE FROM regatta_course_gates WHERE race_id = CAST(:race_id AS uuid)"),
+            {"race_id": race_id},
+        )
+        session.execute(
+            text("DELETE FROM regatta_race_participations WHERE race_id = CAST(:race_id AS uuid)"),
+            {"race_id": race_id},
+        )
+        deleted = session.execute(
+            text("DELETE FROM regatta_races WHERE id = CAST(:race_id AS uuid)"),
+            {"race_id": race_id},
+        )
+        if deleted.rowcount == 0:
+            raise HTTPException(404, "Race not found")
+        active_row = session.execute(
+            text(
+                """
+                SELECT active_race_id
+                FROM regatta_events
+                WHERE id = CAST(:event_id AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"event_id": str(event_id)},
+        ).fetchone()
+        active_race_id = str(active_row[0]) if active_row and active_row[0] else None
+        if active_race_id == race_id:
+            replacement = session.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM regatta_races
+                    WHERE event_id = CAST(:event_id AS uuid)
+                    ORDER BY sequence_number ASC, created_at ASC
+                    LIMIT 1
+                    """
+                ),
+                {"event_id": str(event_id)},
+            ).fetchone()
+            session.execute(
+                text(
+                    """
+                    UPDATE regatta_events
+                    SET active_race_id = CAST(:active_race_id AS uuid),
+                        updated_at = NOW()
+                    WHERE id = CAST(:event_id AS uuid)
+                    """
+                ),
+                {
+                    "event_id": str(event_id),
+                    "active_race_id": str(replacement[0]) if replacement else None,
+                },
+            )
         session.commit()
     return {"ok": True}
 

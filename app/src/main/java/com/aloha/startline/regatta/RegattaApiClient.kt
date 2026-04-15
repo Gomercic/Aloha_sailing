@@ -21,7 +21,21 @@ data class RegattaCreateResult(
 data class RegattaJoinResult(
     val eventId: String,
     val raceId: String?,
-    val boatId: String?
+    val boatId: String?,
+    val boatCode: String?
+)
+
+data class RegattaJoinPrefillResult(
+    val found: Boolean,
+    val eventId: String?,
+    val raceId: String?,
+    val boatId: String?,
+    val boatCode: String?,
+    val boatName: String?,
+    val skipperName: String?,
+    val clubName: String?,
+    val lengthValue: Double?,
+    val lengthUnit: String?
 )
 
 data class RegattaOrganizerAuthResult(
@@ -46,8 +60,6 @@ data class PublicRegattaEventSummary(
     val status: String,
     val startDate: String?,
     val endDate: String?,
-    val raceEndTime: String?,
-    val regattaLengthNm: Double,
     val updatedAt: String,
     val boatsCount: Int,
     val racesCount: Int,
@@ -64,8 +76,6 @@ data class AdminRegattaEventSummary(
     val isPublic: Boolean,
     val startDate: String?,
     val endDate: String?,
-    val raceEndTime: String?,
-    val regattaLengthNm: Double,
     val updatedAt: String,
     val boatsCount: Int,
     val racesCount: Int,
@@ -129,8 +139,6 @@ class RegattaApiClient(
                     put("organizer_code", draft.organizerCode.trim())
                     put("start_date", draft.startDate.trim())
                     put("end_date", draft.endDate.trim())
-                    put("race_end_time", draft.raceEndTime.trim())
-                    put("regatta_length_nm", draft.regattaLengthNm)
                     put("is_public", draft.isPublic)
                     put("max_boats", draft.maxBoats)
                 }.toString().toRequestBody(JSON_MEDIA)
@@ -150,14 +158,14 @@ class RegattaApiClient(
     }
 
     fun authenticateOrganizer(
-        joinCode: String,
-        organizerCode: String
+        organizerCode: String,
+        joinCode: String? = null
     ): NasCallResult<RegattaOrganizerAuthResult> {
         val request = Request.Builder()
             .url("${NasDefaults.BASE_URL}/v1/regattas/events/organizer-auth")
             .post(
                 JSONObject().apply {
-                    put("join_code", joinCode.trim())
+                    if (!joinCode.isNullOrBlank()) put("join_code", joinCode.trim())
                     put("organizer_code", organizerCode.trim())
                 }.toString().toRequestBody(JSON_MEDIA)
             )
@@ -200,7 +208,41 @@ class RegattaApiClient(
             RegattaJoinResult(
                 eventId = json.getString("event_id"),
                 raceId = json.optString("race_id").takeIf { it.isNotBlank() },
-                boatId = json.optString("boat_id").takeIf { it.isNotBlank() }
+                boatId = json.optString("boat_id").takeIf { it.isNotBlank() },
+                boatCode = json.optString("boat_code").takeIf { it.isNotBlank() }
+            )
+        }
+    }
+
+    fun getJoinPrefill(
+        joinCode: String,
+        deviceId: String
+    ): NasCallResult<RegattaJoinPrefillResult> {
+        val request = Request.Builder()
+            .url("${NasDefaults.BASE_URL}/v1/regattas/events/join-prefill")
+            .post(
+                JSONObject().apply {
+                    put("join_code", joinCode.trim())
+                    put("device_id", deviceId.trim())
+                }.toString().toRequestBody(JSON_MEDIA)
+            )
+            .header("X-API-Key", NasDefaults.API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return execute(request) { body ->
+            val json = JSONObject(body)
+            val found = json.optBoolean("found", false)
+            RegattaJoinPrefillResult(
+                found = found,
+                eventId = json.optString("event_id").takeIf { it.isNotBlank() },
+                raceId = json.optString("race_id").takeIf { it.isNotBlank() },
+                boatId = json.optString("boat_id").takeIf { it.isNotBlank() },
+                boatCode = json.optString("boat_code").takeIf { it.isNotBlank() },
+                boatName = json.optString("boat_name").takeIf { it.isNotBlank() },
+                skipperName = json.optString("skipper_name").takeIf { it.isNotBlank() },
+                clubName = json.optString("club_name").takeIf { it.isNotBlank() },
+                lengthValue = json.optDouble("length_value").takeIf { !it.isNaN() },
+                lengthUnit = json.optString("length_unit").takeIf { it.isNotBlank() }
             )
         }
     }
@@ -237,6 +279,19 @@ class RegattaApiClient(
         }
     }
 
+    fun getEventBoatsRawJson(eventId: String): NasCallResult<String> {
+        val request = Request.Builder()
+            .url("${NasDefaults.BASE_URL}/v1/regattas/events/${eventId.trim()}/snapshot")
+            .get()
+            .header("X-API-Key", NasDefaults.API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return execute(request) { body ->
+            val boatsArray = JSONObject(body).optJSONArray("boats") ?: JSONArray()
+            boatsArray.toString()
+        }
+    }
+
     fun listPublicEvents(): NasCallResult<List<PublicRegattaEventSummary>> {
         val request = Request.Builder()
             .url("${NasDefaults.BASE_URL}/v1/regattas/events/public")
@@ -259,8 +314,6 @@ class RegattaApiClient(
                             status = item.optString("status"),
                             startDate = item.optString("start_date").takeIf { it.isNotBlank() },
                             endDate = item.optString("end_date").takeIf { it.isNotBlank() },
-                            raceEndTime = item.optString("race_end_time").takeIf { it.isNotBlank() },
-                            regattaLengthNm = item.optDouble("regatta_length_nm").takeIf { !it.isNaN() } ?: 0.0,
                             updatedAt = item.optString("updated_at"),
                             boatsCount = item.optInt("boats_count", 0),
                             racesCount = item.optInt("races_count", 0),
@@ -317,8 +370,6 @@ class RegattaApiClient(
                             isPublic = item.optBoolean("is_public", false),
                             startDate = item.optString("start_date").takeIf { it.isNotBlank() },
                             endDate = item.optString("end_date").takeIf { it.isNotBlank() },
-                            raceEndTime = item.optString("race_end_time").takeIf { it.isNotBlank() },
-                            regattaLengthNm = item.optDouble("regatta_length_nm").takeIf { !it.isNaN() } ?: 0.0,
                             updatedAt = item.optString("updated_at"),
                             boatsCount = item.optInt("boats_count", 0),
                             racesCount = item.optInt("races_count", 0),
@@ -382,6 +433,57 @@ class RegattaApiClient(
         }
     }
 
+    fun deleteRace(
+        raceId: String,
+        organizerToken: String,
+        eventId: String? = null
+    ): NasCallResult<Unit> {
+        val normalizedRaceId = raceId.trim()
+        val normalizedToken = organizerToken.trim()
+        if (normalizedRaceId.isBlank()) {
+            return NasCallResult.Err("Race id is missing.")
+        }
+        if (normalizedToken.isBlank()) {
+            return NasCallResult.Err("Organizer token is missing.")
+        }
+
+        val candidateUrls = buildList {
+            add("${NasDefaults.BASE_URL}/v1/regattas/races/$normalizedRaceId?organizer_token=$normalizedToken")
+            eventId?.trim()?.takeIf { it.isNotBlank() }?.let { normalizedEventId ->
+                // Backward-compatible fallback for deployments still using event-scoped race delete route.
+                add("${NasDefaults.BASE_URL}/v1/regattas/events/$normalizedEventId/races/$normalizedRaceId?organizer_token=$normalizedToken")
+            }
+        }
+
+        var lastErrorMessage: String? = null
+        for ((index, url) in candidateUrls.withIndex()) {
+            val request = Request.Builder()
+                .url(url)
+                .delete()
+                .header("X-API-Key", NasDefaults.API_KEY)
+                .header("Accept", "application/json")
+                .build()
+            try {
+                http.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (response.isSuccessful) return NasCallResult.Ok(Unit)
+                    val hint = if (body.isNotBlank()) body.take(200) else response.message
+                    // Retry on the next candidate only for "route not found" responses.
+                    if (response.code == 404 && index < candidateUrls.lastIndex) {
+                        lastErrorMessage = "HTTP ${response.code}: $hint"
+                        return@use
+                    }
+                    return NasCallResult.Err("HTTP ${response.code}: $hint")
+                }
+            } catch (e: IOException) {
+                return NasCallResult.Err(e.message ?: "Network error")
+            } catch (e: Exception) {
+                return NasCallResult.Err(e.message ?: "Response parsing error")
+            }
+        }
+        return NasCallResult.Err(lastErrorMessage ?: "HTTP 404: Not Found")
+    }
+
     fun updateBoatGroup(
         eventId: String,
         boatId: String,
@@ -421,6 +523,59 @@ class RegattaApiClient(
         return execute(request) { Unit }
     }
 
+    fun deleteNoticePost(
+        eventId: String,
+        noticeId: String,
+        organizerToken: String
+    ): NasCallResult<Unit> {
+        val normalizedEventId = eventId.trim()
+        val normalizedNoticeId = noticeId.trim()
+        val normalizedToken = organizerToken.trim()
+        if (normalizedEventId.isBlank()) {
+            return NasCallResult.Err("Event id is missing.")
+        }
+        if (normalizedNoticeId.isBlank()) {
+            return NasCallResult.Err("Notice id is missing.")
+        }
+        if (normalizedToken.isBlank()) {
+            return NasCallResult.Err("Organizer token is missing.")
+        }
+
+        val candidateUrls = listOf(
+            "${NasDefaults.BASE_URL}/v1/regattas/events/$normalizedEventId/notice-posts/$normalizedNoticeId?organizer_token=$normalizedToken",
+            // Backward-compatible fallbacks for older deployments.
+            "${NasDefaults.BASE_URL}/v1/regattas/events/$normalizedEventId/notice-post/$normalizedNoticeId?organizer_token=$normalizedToken",
+            "${NasDefaults.BASE_URL}/v1/regattas/notice-posts/$normalizedNoticeId?event_id=$normalizedEventId&organizer_token=$normalizedToken"
+        )
+
+        var lastErrorMessage: String? = null
+        for ((index, url) in candidateUrls.withIndex()) {
+            val request = Request.Builder()
+                .url(url)
+                .delete()
+                .header("X-API-Key", NasDefaults.API_KEY)
+                .header("Accept", "application/json")
+                .build()
+            try {
+                http.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (response.isSuccessful) return NasCallResult.Ok(Unit)
+                    val hint = if (body.isNotBlank()) body.take(200) else response.message
+                    if (response.code == 404 && index < candidateUrls.lastIndex) {
+                        lastErrorMessage = "HTTP ${response.code}: $hint"
+                        return@use
+                    }
+                    return NasCallResult.Err("HTTP ${response.code}: $hint")
+                }
+            } catch (e: IOException) {
+                return NasCallResult.Err(e.message ?: "Network error")
+            } catch (e: Exception) {
+                return NasCallResult.Err(e.message ?: "Response parsing error")
+            }
+        }
+        return NasCallResult.Err(lastErrorMessage ?: "HTTP 404: Not Found")
+    }
+
     fun updateEvent(
         eventId: String,
         organizerToken: String,
@@ -437,8 +592,6 @@ class RegattaApiClient(
                     put("organizer_code", draft.organizerCode.trim())
                     put("start_date", draft.startDate.trim())
                     put("end_date", draft.endDate.trim())
-                    put("race_end_time", draft.raceEndTime.trim())
-                    put("regatta_length_nm", draft.regattaLengthNm)
                     put("max_boats", draft.maxBoats)
                     put("is_public", draft.isPublic)
                 }.toString().toRequestBody(JSON_MEDIA)
@@ -805,8 +958,6 @@ class RegattaApiClient(
             organizerName = json.optString("organizer_name"),
             startDate = json.optString("start_date").takeIf { it.isNotBlank() },
             endDate = json.optString("end_date").takeIf { it.isNotBlank() },
-            raceEndTime = json.optString("race_end_time").takeIf { it.isNotBlank() },
-            regattaLengthNm = json.optDouble("regatta_length_nm").takeIf { !it.isNaN() } ?: 0.0,
             isPublic = json.optBoolean("is_public", false),
             maxBoats = json.optInt("max_boats", 50),
             noticeBoard = json.optString("notice_board"),
@@ -843,6 +994,7 @@ class RegattaApiClient(
                     RegattaBoatSummary(
                         id = item.optString("id"),
                         deviceId = item.optString("device_id").takeIf { it.isNotBlank() },
+                        boatCode = item.optString("boat_code").takeIf { it.isNotBlank() },
                         boatName = item.optString("boat_name"),
                         skipperName = item.optString("skipper_name"),
                         clubName = item.optString("club_name"),

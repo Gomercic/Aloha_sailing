@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 /**
  * Scrollable in-app help (English). Styled for dark background (parent provides black).
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HelpScreen(
     modifier: Modifier = Modifier,
@@ -297,7 +299,7 @@ fun HelpScreen(
                             }) {
                                 is NasCallResult.Ok -> {
                                     adminEvents = result.value
-                                    superuserStatusMessage = "Lista regata osvježena."
+                                    superuserStatusMessage = "Regatta list refreshed."
                                 }
                                 is NasCallResult.Err -> superuserErrorMessage = result.message
                             }
@@ -306,7 +308,7 @@ fun HelpScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
                 ) {
-                    Text("Osvježi")
+                    Text("Refresh")
                 }
                 Spacer(Modifier.width(8.dp))
                 Button(
@@ -314,7 +316,7 @@ fun HelpScreen(
                         superuserToken = ""
                         superuserLoggedInAs = ""
                         adminEvents = emptyList()
-                        superuserStatusMessage = "Superuser odjavljen."
+                        superuserStatusMessage = "Superuser logged out."
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8E2424))
                 ) {
@@ -323,12 +325,12 @@ fun HelpScreen(
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "Sve regate (${adminEvents.size}) — long press za brisanje",
+                text = "All regattas (${adminEvents.size}) — long press to delete",
                 style = subStyle
             )
             Spacer(Modifier.height(8.dp))
             if (adminEvents.isEmpty()) {
-                Text("Nema regata za prikaz.", color = Color(0xFFCFD8DC), style = bodyStyle)
+                Text("No regattas to display.", color = Color(0xFFCFD8DC), style = bodyStyle)
             } else {
                 adminEvents.forEach { event ->
                     Card(
@@ -354,7 +356,7 @@ fun HelpScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Public: ${if (event.isPublic) "Da" else "Ne"}",
+                                    text = "Public: ${if (event.isPublic) "Yes" else "No"}",
                                     color = Color(0xFFCFD8DC),
                                     fontSize = 12.sp
                                 )
@@ -366,7 +368,7 @@ fun HelpScreen(
                                 )
                             }
                             Text(
-                                text = "Datumi: ${event.startDate ?: "--"} -> ${event.endDate ?: "--"}",
+                                text = "Dates: ${event.startDate ?: "--"} -> ${event.endDate ?: "--"}",
                                 color = Color(0xFFCFD8DC),
                                 fontSize = 12.sp
                             )
@@ -381,7 +383,7 @@ fun HelpScreen(
                                 fontSize = 12.sp
                             )
                             Text(
-                                text = "Race: ${event.racesCount}, Bodovi: ${event.pointsCount}, Brodovi: ${event.boatsCount}",
+                                text = "Races: ${event.racesCount}, Points: ${event.pointsCount}, Boats: ${event.boatsCount}",
                                 color = Color(0xFFCFD8DC),
                                 fontSize = 12.sp
                             )
@@ -391,7 +393,7 @@ fun HelpScreen(
                                 onClick = {
                                     scope.launch {
                                         if (superuserToken.isBlank()) {
-                                            superuserErrorMessage = "Nema aktivnog superuser tokena."
+                                            superuserErrorMessage = "No active superuser token."
                                             return@launch
                                         }
                                         superuserBusy = true
@@ -401,7 +403,7 @@ fun HelpScreen(
                                             apiClient.createAdminOrganizerSession(event.eventId, superuserToken)
                                         }) {
                                             is NasCallResult.Ok -> {
-                                                superuserStatusMessage = "Otvaram organizer editor za '${event.name}'."
+                                                superuserStatusMessage = "Opening organizer editor for '${event.name}'."
                                                 onOpenOrganizerFromSuperuser(
                                                     openResult.value.eventId,
                                                     openResult.value.organizerToken
@@ -432,18 +434,18 @@ fun HelpScreen(
                 deleteConfirmVisible = false
                 pendingDeleteEvent = null
             },
-            title = { Text("Potvrda brisanja") },
+            title = { Text("Confirm deletion") },
             text = {
                 Text(
-                    "Obrisati regatu '${event.name}'?\n\n" +
-                        "Ovo briše i sve povezane race/plovove, brodove i rezultate."
+                    "Delete regatta '${event.name}'?\n\n" +
+                        "This will also delete all associated races, boats, and results."
                 )
             },
             confirmButton = {
                 Button(
                     onClick = {
                         if (superuserToken.isBlank()) {
-                            superuserErrorMessage = "Superuser token nije aktivan."
+                            superuserErrorMessage = "Superuser token not active."
                             deleteConfirmVisible = false
                             pendingDeleteEvent = null
                             return@Button
@@ -460,7 +462,7 @@ fun HelpScreen(
                                 apiClient.deleteAdminEvent(eventId, superuserToken)
                             }) {
                                 is NasCallResult.Ok -> {
-                                    superuserStatusMessage = "Regata '$eventName' je obrisana."
+                                    superuserStatusMessage = "Regatta '$eventName' deleted."
                                     when (val listResult = withContext(Dispatchers.IO) {
                                         apiClient.listAdminEvents(superuserToken)
                                     }) {

@@ -53,7 +53,7 @@ class NasTelemetryClient(
         return execute(request) { body ->
             val root = JSONObject(body)
             NasAnchoringPayload.fromTelemetryJson(root)
-                ?: error("Nema payload polja u odgovoru.")
+                ?: error("No payload field in response.")
         }
     }
 
@@ -68,9 +68,9 @@ class NasTelemetryClient(
                 NasCallResult.Ok(parse(body))
             }
         } catch (e: IOException) {
-            NasCallResult.Err(e.message ?: "Mrežna greška")
+            NasCallResult.Err(e.message ?: "Network error")
         } catch (e: Exception) {
-            NasCallResult.Err(e.message ?: "Greška pri obradi odgovora")
+            NasCallResult.Err(e.message ?: "Error processing response")
         }
     }
 
