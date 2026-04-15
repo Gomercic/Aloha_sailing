@@ -56,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -2271,6 +2272,19 @@ fun RegattaScreen(
                 }
                 val event = eventSnapshot
                 val eventBoats = event?.boats.orEmpty()
+                val raceIdForPenalty = event?.activeRaceId
+                    ?.takeIf { it.isNotBlank() }
+                    ?: event?.races?.firstOrNull()?.id.orEmpty()
+                LaunchedEffect(eventBoats) {
+                    eventBoats.forEach { boat ->
+                        if (!groupInputs.containsKey(boat.id)) {
+                            groupInputs[boat.id] = boat.groupCode.orEmpty()
+                        }
+                        if (!penaltyValueInputs.containsKey(boat.id)) {
+                            penaltyValueInputs[boat.id] = ""
+                        }
+                    }
+                }
                 RegattaSection(title = "", cardColor = cardColor) {
                     if (eventBoats.isEmpty()) {
                         Text("No boats.", color = muted)
@@ -2281,14 +2295,122 @@ fun RegattaScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(Color(0xFF171717))
-                                        .padding(10.dp)
+                                        .padding(8.dp)
                                 ) {
                                     Text(boat.boatName, color = Color.White, fontWeight = FontWeight.Bold)
+                                    val lengthMetersValue = when {
+                                        boat.lengthValue == null -> null
+                                        boat.lengthUnit.equals("ft", ignoreCase = true) -> boat.lengthValue * 0.3048
+                                        else -> boat.lengthValue
+                                    }
+                                    val lengthFeetValue = lengthMetersValue?.let { meters -> meters / 0.3048 }
+                                    val lengthMetersText = lengthMetersValue?.let { String.format(Locale.US, "%.2f", it) } ?: "--"
+                                    val lengthFeetText = lengthFeetValue?.let { String.format(Locale.US, "%.2f", it) } ?: "--"
+                                    Text("Boat length: $lengthMetersText m, $lengthFeetText ft", color = Color(0xFFCFD8DC), fontSize = 12.sp)
                                     Text("Skipper: ${boat.skipperName.ifBlank { "--" }}", color = Color(0xFFCFD8DC), fontSize = 12.sp)
-                                    Text("ID: ${boat.id}", color = Color(0xFF90A4AE), fontSize = 11.sp)
+                                    Text("Club: ${boat.clubName.ifBlank { "--" }}", color = Color(0xFFCFD8DC), fontSize = 12.sp)
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = groupInputs[boat.id].orEmpty(),
+                                            onValueChange = { groupInputs[boat.id] = it },
+                                            label = { Text("Group") },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        OutlinedTextField(
+                                            value = penaltyValueInputs[boat.id].orEmpty(),
+                                            onValueChange = { penaltyValueInputs[boat.id] = it },
+                                            label = { Text("Penality (%)") },
+                                            modifier = Modifier.weight(1f),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                                        )
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            enabled = !isBusy,
+                                            onClick = {
+                                                if (joinedEventId.isBlank() || organizerToken.isBlank()) {
+                                                    errorMessage = "Organizer session missing."
+                                                    return@Button
+                                                }
+                                                val penaltyText = penaltyValueInputs[boat.id].orEmpty().trim()
+                                                val penaltyValue = if (penaltyText.isBlank()) {
+                                                    null
+                                                } else {
+                                                    penaltyText.toDoubleOrNull()
+                                                }
+                                                if (penaltyText.isNotBlank() && penaltyValue == null) {
+                                                    errorMessage = "Penality must be a number."
+                                                    return@Button
+                                                }
+                                                isBusy = true
+                                                errorMessage = null
+                                                statusMessage = null
+                                                scope.launch {
+                                                    when (val updateResult = withContext(Dispatchers.IO) {
+                                                        apiClient.updateBoatGroup(
+                                                            eventId = joinedEventId,
+                                                            boatId = boat.id,
+                                                            organizerToken = organizerToken,
+                                                            groupCode = groupInputs[boat.id].orEmpty()
+                                                        )
+                                                    }) {
+                                                        is NasCallResult.Ok -> {
+                                                            if (penaltyValue != null) {
+                                                                if (raceIdForPenalty.isBlank()) {
+                                                                    errorMessage = "No active race for penality."
+                                                                } else {
+                                                                when (val penaltyResult = withContext(Dispatchers.IO) {
+                                                                    apiClient.createPenalty(
+                                                                        raceId = raceIdForPenalty,
+                                                                        boatId = boat.id,
+                                                                        organizerToken = organizerToken,
+                                                                        type = "percent",
+                                                                        value = penaltyValue,
+                                                                        reason = "Manual from boat list"
+                                                                    )
+                                                                }) {
+                                                                    is NasCallResult.Ok<*> -> Unit
+                                                                    is NasCallResult.Err -> errorMessage = penaltyResult.message
+                                                                }
+                                                                }
+                                                            }
+                                                            when (val snapshotResult = withContext(Dispatchers.IO) {
+                                                                apiClient.getEventSnapshot(joinedEventId)
+                                                            }) {
+                                                                is NasCallResult.Ok -> {
+                                                                    eventSnapshot = snapshotResult.value
+                                                                    statusMessage = if (penaltyValue != null) {
+                                                                        "Boat updated. Group and penality saved."
+                                                                    } else {
+                                                                        "Boat updated. Group saved."
+                                                                    }
+                                                                }
+                                                                is NasCallResult.Err -> errorMessage = snapshotResult.message
+                                                            }
+                                                        }
+                                                        is NasCallResult.Err -> errorMessage = updateResult.message
+                                                    }
+                                                    isBusy = false
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.buttonColors(containerColor = actionGreen)
+                                        ) { Text("Save") }
+                                        Button(
+                                            enabled = !isBusy,
+                                            onClick = {
+                                                pendingDeleteBoat = boat
+                                                showDeleteBoatConfirm = true
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8D1B1B))
+                                        ) { Text("Delete") }
+                                    }
                                 }
                             }
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(4.dp))
                         }
                     }
                 }
@@ -2966,7 +3088,7 @@ fun RegattaScreen(
                 pendingDeleteBoat = null
             },
             title = { Text("Delete boat") },
-            text = { Text("Are you sure you want to delete ${boat.boatName} and all its results from the regatta?") },
+            text = { Text("Are you sure? This will delete all boat tracks for ${boat.boatName}.") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -2999,7 +3121,7 @@ fun RegattaScreen(
                         showDeleteBoatConfirm = false
                         pendingDeleteBoat = null
                     }
-                ) { Text("No") }
+                ) { Text("Cancel") }
             }
         )
     }
