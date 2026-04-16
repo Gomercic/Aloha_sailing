@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -54,6 +55,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -634,11 +636,19 @@ fun RegattaScreen(
         modifier = Modifier.fillMaxSize(),
         color = background
     ) {
-        Column(
-            modifier = Modifier
+        val shouldScrollContent = mode != "history_race_map"
+        val contentModifier = if (shouldScrollContent) {
+            Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(12.dp),
+                .padding(12.dp)
+        } else {
+            Modifier
+                .fillMaxSize()
+                .padding(12.dp)
+        }
+        Column(
+            modifier = contentModifier,
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (mode != "organizer" && mode != "organizer_editor" && mode != "organizer_race_editor") {
@@ -1304,59 +1314,79 @@ fun RegattaScreen(
                         delay(5_000L)
                     }
                 }
-                RegattaSection(title = "Map", cardColor = cardColor) {
+                RegattaSection(
+                    title = "Map",
+                    cardColor = cardColor,
+                    modifier = Modifier.weight(1f, fill = true),
+                    expandContentVertically = true
+                ) {
                     if (selectedRace == null || raceLive == null) {
                         Text("Map data not available.", color = muted)
                     } else {
-                        Button(
-                            onClick = { mode = "history_race" },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
-                        ) { Text("Back to results") }
-                        Spacer(Modifier.height(8.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = { historyMapBoatMenuExpanded = true },
-                                modifier = Modifier.fillMaxWidth()
+                        // MapView draws in a native layer and can paint over earlier Compose siblings.
+                        // Draw the map first, then overlay controls with an opaque strip on top.
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            HistoryResultsMapView(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clipToBounds(),
+                                selectedRaceLive = raceLive,
+                                participants = participants,
+                                selectedBoatId = selectedBoatId,
+                                selectedBoatTrack = historyMapBoatTrack
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.TopStart)
+                                    .background(cardColor)
+                                    .zIndex(1f)
                             ) {
-                                val selectedLabel = participants.firstOrNull { it.boatId == selectedBoatId }?.boatName
-                                    ?: "Select boat"
-                                Text(selectedLabel)
-                            }
-                            DropdownMenu(
-                                expanded = historyMapBoatMenuExpanded,
-                                onDismissRequest = { historyMapBoatMenuExpanded = false }
-                            ) {
-                                participants.forEach { participant ->
-                                    val hasRecentSync = participant.lastSignalEpochMs?.let { lastSignal ->
-                                        (System.currentTimeMillis() - lastSignal) <= 90_000L
-                                    } == true
-                                    val statusLabel = if (hasRecentSync) "Sync ON" else "Sync OFF"
-                                    val statusColor = if (hasRecentSync) Color(0xFF43A047) else Color(0xFFE53935)
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text("●", color = statusColor, fontSize = 12.sp)
-                                                Text("${participant.boatName} · $statusLabel")
-                                            }
-                                        },
-                                        onClick = {
-                                            historyMapSelectedBoatId = participant.boatId
-                                            historyMapBoatMenuExpanded = false
+                                Button(
+                                    onClick = { mode = "history_race" },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242))
+                                ) { Text("Back to results") }
+                                Spacer(Modifier.height(8.dp))
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    OutlinedButton(
+                                        onClick = { historyMapBoatMenuExpanded = true },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        val selectedLabel = participants.firstOrNull { it.boatId == selectedBoatId }?.boatName
+                                            ?: "Select boat"
+                                        Text(selectedLabel)
+                                    }
+                                    DropdownMenu(
+                                        expanded = historyMapBoatMenuExpanded,
+                                        onDismissRequest = { historyMapBoatMenuExpanded = false }
+                                    ) {
+                                        participants.forEach { participant ->
+                                            val hasRecentSync = participant.lastSignalEpochMs?.let { lastSignal ->
+                                                (System.currentTimeMillis() - lastSignal) <= 90_000L
+                                            } == true
+                                            val statusLabel = if (hasRecentSync) "Sync ON" else "Sync OFF"
+                                            val statusColor = if (hasRecentSync) Color(0xFF43A047) else Color(0xFFE53935)
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text("●", color = statusColor, fontSize = 12.sp)
+                                                        Text("${participant.boatName} · $statusLabel")
+                                                    }
+                                                },
+                                                onClick = {
+                                                    historyMapSelectedBoatId = participant.boatId
+                                                    historyMapBoatMenuExpanded = false
+                                                }
+                                            )
                                         }
-                                    )
+                                    }
                                 }
+                                Spacer(Modifier.height(8.dp))
                             }
                         }
-                        Spacer(Modifier.height(8.dp))
-                        HistoryResultsMapView(
-                            selectedRaceLive = raceLive,
-                            participants = participants,
-                            selectedBoatId = selectedBoatId,
-                            selectedBoatTrack = historyMapBoatTrack
-                        )
                     }
                 }
             }
@@ -3754,6 +3784,7 @@ private fun OrganizerGateMap(
 
 @Composable
 private fun HistoryResultsMapView(
+    modifier: Modifier = Modifier,
     selectedRaceLive: RegattaLiveSnapshot,
     participants: List<RegattaParticipantLive>,
     selectedBoatId: String,
@@ -3764,25 +3795,24 @@ private fun HistoryResultsMapView(
         it.lastLatitude != null && it.lastLongitude != null
     }
     val hasMapData = raceGates.isNotEmpty() || visibleParticipants.isNotEmpty() || selectedBoatTrack.isNotEmpty()
-    AndroidView(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(280.dp),
-        factory = { ctx ->
-            org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
-            MapView(ctx).apply {
-                setTileSource(TileSourceFactory.MAPNIK)
-                setMultiTouchControls(true)
-                setBuiltInZoomControls(false)
-                isTilesScaledToDpi = true
-                controller.setZoom(15.0)
-            }
-        },
-        update = { mapView ->
-            mapView.overlays.clear()
-            val boundsPoints = mutableListOf<GeoPoint>()
+    Box(modifier = modifier.clipToBounds()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                org.osmdroid.config.Configuration.getInstance().userAgentValue = ctx.packageName
+                MapView(ctx).apply {
+                    setTileSource(TileSourceFactory.MAPNIK)
+                    setMultiTouchControls(true)
+                    setBuiltInZoomControls(false)
+                    isTilesScaledToDpi = true
+                    controller.setZoom(15.0)
+                }
+            },
+            update = { mapView ->
+                mapView.overlays.clear()
+                val boundsPoints = mutableListOf<GeoPoint>()
 
-            raceGates.forEach { gate ->
+                raceGates.forEach { gate ->
                 val pointA = GeoPoint(gate.pointA.latitude, gate.pointA.longitude)
                 val pointB = GeoPoint(gate.pointB.latitude, gate.pointB.longitude)
                 boundsPoints += pointA
@@ -3883,10 +3913,16 @@ private fun HistoryResultsMapView(
                 }
             }
             mapView.invalidate()
+            }
+        )
+        if (!hasMapData) {
+            Text(
+                text = "No map data yet",
+                color = Color(0xFFB0BEC5),
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
-    )
-    if (!hasMapData) {
-        Text("No map data yet", color = Color(0xFFB0BEC5), fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -3972,12 +4008,15 @@ private fun TimePickerField(
 private fun RegattaSection(
     title: String,
     cardColor: Color,
+    modifier: Modifier = Modifier,
+    expandContentVertically: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(modifier = modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (expandContentVertically) Modifier.fillMaxHeight() else Modifier)
                 .background(cardColor)
                 .padding(12.dp)
         ) {

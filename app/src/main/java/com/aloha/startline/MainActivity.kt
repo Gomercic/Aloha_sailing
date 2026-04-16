@@ -1810,6 +1810,17 @@ fun StartLineScreen() {
                                 }
                             },
                             onExitClick = { showExitConfirmDialog = true },
+                            onExitRegattaClick = {
+                                regattaPrefs.clearJoinedEvent()
+                                regattaSessionLocked = false
+                                regattaJoinModeActive = false
+                                regattaRaceSessionRunning = false
+                                regattaSelectedRaceId = ""
+                                regattaLiveSnapshot = null
+                                regattaEventSnapshot = null
+                                openRegattaJoinFormFromMenu = false
+                                currentScreen = AppScreen.Main
+                            },
                             onRaceLogoutClick = {
                                 if (regattaRaceSessionRunning) {
                                     showRaceLogoutBlockedDialog = true
@@ -2127,6 +2138,17 @@ fun StartLineScreen() {
                         }
                     },
                     onExitClick = { showExitConfirmDialog = true },
+                    onExitRegattaClick = {
+                        regattaPrefs.clearJoinedEvent()
+                        regattaSessionLocked = false
+                        regattaJoinModeActive = false
+                        regattaRaceSessionRunning = false
+                        regattaSelectedRaceId = ""
+                        regattaLiveSnapshot = null
+                        regattaEventSnapshot = null
+                        openRegattaJoinFormFromMenu = false
+                        currentScreen = AppScreen.Main
+                    },
                     onRaceLogoutClick = {
                         if (regattaRaceSessionRunning) {
                             showRaceLogoutBlockedDialog = true
@@ -4547,6 +4569,7 @@ private fun AppHeader(
     onScreenSelected: (AppScreen) -> Unit,
     onToggleMainWindShift: () -> Unit,
     onExitClick: () -> Unit,
+    onExitRegattaClick: () -> Unit,
     onRaceLogoutClick: () -> Unit,
     menuIconFontSize: TextUnit = 26.sp,
     titleColor: Color = MaterialTheme.colorScheme.onBackground,
@@ -4628,9 +4651,16 @@ private fun AppHeader(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("WindShift") },
+                                text = { Text("Login Regatta") },
                                 onClick = {
-                                    onScreenSelected(AppScreen.WindShift)
+                                    onScreenSelected(AppScreen.Regatta)
+                                    onMenuExpandedChange(false)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Exit Regatta") },
+                                onClick = {
+                                    onExitRegattaClick()
                                     onMenuExpandedChange(false)
                                 }
                             )
