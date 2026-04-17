@@ -6,6 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Point
+import android.graphics.RectF
 import android.location.Location
 import android.net.Uri
 import android.graphics.drawable.GradientDrawable
@@ -81,6 +85,7 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polyline
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1004,6 +1009,7 @@ fun RegattaScreen(
                         Spacer(Modifier.height(10.dp))
                         Text("Gate crossings", color = Color.White, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(6.dp))
+                        val gateTimelineHorizontalScroll = rememberScrollState()
                         if (gateTimelineHeaders.isEmpty()) {
                             Text("No gates defined for crossings.", color = muted)
                         } else if (gateTimelineRows.isEmpty()) {
@@ -1012,7 +1018,7 @@ fun RegattaScreen(
                             Card(modifier = Modifier.fillMaxWidth()) {
                                 Row(
                                     modifier = Modifier
-                                        .horizontalScroll(rememberScrollState())
+                                        .horizontalScroll(gateTimelineHorizontalScroll)
                                         .background(Color(0xFF263238))
                                         .padding(8.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1033,7 +1039,7 @@ fun RegattaScreen(
                                     Card(modifier = Modifier.fillMaxWidth()) {
                                         Row(
                                             modifier = Modifier
-                                                .horizontalScroll(rememberScrollState())
+                                                .horizontalScroll(gateTimelineHorizontalScroll)
                                                 .background(Color(0xFF171717))
                                                 .padding(10.dp),
                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1333,7 +1339,8 @@ fun RegattaScreen(
                                 selectedRaceLive = raceLive,
                                 participants = participants,
                                 selectedBoatId = selectedBoatId,
-                                selectedBoatTrack = historyMapBoatTrack
+                                selectedBoatTrack = historyMapBoatTrack,
+                                boatsById = historySelectedEvent?.boats.orEmpty().associateBy { it.id }
                             )
                             Column(
                                 modifier = Modifier
@@ -3033,6 +3040,7 @@ fun RegattaScreen(
                         Spacer(Modifier.height(10.dp))
                         Text("Gate crossings", color = Color.White, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(6.dp))
+                        val gateTimelineHorizontalScroll = rememberScrollState()
                         if (gateTimelineHeaders.isEmpty()) {
                             Text("No gates defined for crossings.", color = muted)
                         } else if (gateTimelineRows.isEmpty()) {
@@ -3041,7 +3049,7 @@ fun RegattaScreen(
                             Card(modifier = Modifier.fillMaxWidth()) {
                                 Row(
                                     modifier = Modifier
-                                        .horizontalScroll(rememberScrollState())
+                                        .horizontalScroll(gateTimelineHorizontalScroll)
                                         .background(Color(0xFF263238))
                                         .padding(8.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -3062,7 +3070,7 @@ fun RegattaScreen(
                                     Card(modifier = Modifier.fillMaxWidth()) {
                                         Row(
                                             modifier = Modifier
-                                                .horizontalScroll(rememberScrollState())
+                                                .horizontalScroll(gateTimelineHorizontalScroll)
                                                 .background(Color(0xFF171717))
                                                 .padding(10.dp),
                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -3788,8 +3796,13 @@ private fun HistoryResultsMapView(
     selectedRaceLive: RegattaLiveSnapshot,
     participants: List<RegattaParticipantLive>,
     selectedBoatId: String,
-    selectedBoatTrack: List<RegattaBoatTrackPoint>
+    selectedBoatTrack: List<RegattaBoatTrackPoint>,
+    boatsById: Map<String, RegattaBoatSummary> = emptyMap()
 ) {
+    var autoZoomedBoatId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectedBoatId) {
+        if (selectedBoatId.isBlank()) autoZoomedBoatId = null
+    }
     val raceGates = selectedRaceLive.gates
     val visibleParticipants = participants.filter {
         it.lastLatitude != null && it.lastLongitude != null
@@ -3811,6 +3824,7 @@ private fun HistoryResultsMapView(
             update = { mapView ->
                 mapView.overlays.clear()
                 val boundsPoints = mutableListOf<GeoPoint>()
+                val boatLabels = mutableListOf<BoatLabelSpec>()
 
                 raceGates.forEach { gate ->
                 val pointA = GeoPoint(gate.pointA.latitude, gate.pointA.longitude)
@@ -3855,6 +3869,20 @@ private fun HistoryResultsMapView(
                 boundsPoints += point
                 val selected = participant.boatId == selectedBoatId
                 if (selected) selectedPoint = point
+                val boat = boatsById[participant.boatId]
+                val lengthFeet = boat?.lengthValue?.let { value ->
+                    if (boat.lengthUnit.equals("ft", ignoreCase = true)) value else value / 0.3048
+                }
+                val skipperLabel = participant.skipperName.ifBlank { "--" }
+                val lengthLabel = lengthFeet?.let { String.format(Locale.US, "%.1f ft", it) } ?: "-- ft"
+                val speedLabel = participant.lastSpeedKnots?.let {
+                    String.format(Locale.US, "%.1f kn", it)
+                } ?: "-- kn"
+                boatLabels += BoatLabelSpec(
+                    point = point,
+                    text = "$skipperLabel · $lengthLabel · $speedLabel",
+                    highlighted = selected
+                )
                 mapView.overlays.add(
                     Marker(mapView).apply {
                         position = point
@@ -3869,6 +3897,9 @@ private fun HistoryResultsMapView(
                         } ?: "-- kn"
                     }
                 )
+            }
+            if (boatLabels.isNotEmpty()) {
+                mapView.overlays.add(BoatLabelsOverlay(boatLabels))
             }
 
             val selectedTrackGeo = selectedBoatTrack.map { GeoPoint(it.latitude, it.longitude) }
@@ -3901,13 +3932,18 @@ private fun HistoryResultsMapView(
                 }
             }
 
+            val selectedBoatKey = selectedBoatId.trim().takeIf { it.isNotBlank() }
+            val shouldAutoZoomSelectedBoat =
+                selectedPoint != null && selectedBoatKey != null && autoZoomedBoatId != selectedBoatKey
             when {
-                selectedPoint != null -> {
+                shouldAutoZoomSelectedBoat -> {
                     mapView.controller.setCenter(selectedPoint)
                     mapView.controller.setZoom(18.0)
+                    autoZoomedBoatId = selectedBoatKey
                 }
-                boundsPoints.size >= 2 -> mapView.zoomToBoundingBox(BoundingBox.fromGeoPointsSafe(boundsPoints), true, 48)
-                boundsPoints.size == 1 -> {
+                selectedBoatKey == null && boundsPoints.size >= 2 ->
+                    mapView.zoomToBoundingBox(BoundingBox.fromGeoPointsSafe(boundsPoints), true, 48)
+                selectedBoatKey == null && boundsPoints.size == 1 -> {
                     mapView.controller.setCenter(boundsPoints.first())
                     mapView.controller.setZoom(16.0)
                 }
@@ -3922,6 +3958,60 @@ private fun HistoryResultsMapView(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.align(Alignment.Center)
             )
+        }
+    }
+}
+
+private data class BoatLabelSpec(
+    val point: GeoPoint,
+    val text: String,
+    val highlighted: Boolean
+)
+
+private class BoatLabelsOverlay(
+    private val labels: List<BoatLabelSpec>
+) : Overlay() {
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textSize = 24f
+        style = Paint.Style.FILL
+    }
+    private val selectedTextPaint = Paint(textPaint).apply {
+        color = android.graphics.Color.BLACK
+    }
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.argb(170, 38, 50, 56)
+        style = Paint.Style.FILL
+    }
+    private val selectedBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.argb(200, 255, 235, 59)
+        style = Paint.Style.FILL
+    }
+    private val pointPx = Point()
+
+    override fun draw(canvas: Canvas, mapView: MapView, shadow: Boolean) {
+        if (shadow) return
+        val projection = mapView.projection ?: return
+        labels.forEach { label ->
+            projection.toPixels(label.point, pointPx)
+            val paint = if (label.highlighted) selectedTextPaint else textPaint
+            val textWidth = paint.measureText(label.text)
+            val textHeight = paint.textSize
+            val left = pointPx.x + 16f
+            val top = pointPx.y - textHeight - 24f
+            val rect = RectF(
+                left - 8f,
+                top - 6f,
+                left + textWidth + 8f,
+                top + textHeight + 4f
+            )
+            canvas.drawRoundRect(
+                rect,
+                10f,
+                10f,
+                if (label.highlighted) selectedBgPaint else bgPaint
+            )
+            canvas.drawText(label.text, left, top + textHeight - 2f, paint)
         }
     }
 }

@@ -347,6 +347,7 @@ fun StartLineScreen() {
     var regattaCrossingContext by remember { mutableStateOf<RegattaCrossingContext?>(null) }
     var regattaReportedGateCrossings by remember { mutableStateOf(setOf<String>()) }
     var regattaPendingCrossings by remember { mutableStateOf<List<PendingRegattaCrossing>>(emptyList()) }
+    var regattaCrossingStatus by remember { mutableStateOf<String?>(null) }
     var regattaPendingStartSnapshot by remember { mutableStateOf<PendingStartSnapshot?>(null) }
     var regattaStartSnapshotSentRaceId by remember { mutableStateOf("") }
     var regattaStartSnapshotSending by remember { mutableStateOf(false) }
@@ -584,6 +585,7 @@ fun StartLineScreen() {
             raceMapSelectedBoatId = ""
             raceMapBoatMenuExpanded = false
             raceMapSelectedBoatTrack = emptyList()
+            regattaCrossingStatus = null
         }
     }
     LaunchedEffect(currentScreen, regattaEffectiveRaceId, raceMapSelectedBoatId) {
@@ -782,30 +784,36 @@ fun StartLineScreen() {
         )
         if (crossings.isEmpty()) return@LaunchedEffect
         val alreadyHandled = regattaReportedGateCrossings + regattaPendingCrossings.map { it.gateId }.toSet()
-        val newGateIds = crossings.filterNot { alreadyHandled.contains(it.id) }.map { it.id }
-        if (newGateIds.isEmpty()) return@LaunchedEffect
+        val newGates = crossings.filterNot { alreadyHandled.contains(it.id) }
+        if (newGates.isEmpty()) return@LaunchedEffect
         val prevEpochMs = elapsedToEpochMillis(previousSample.timestampMs)
         val currEpochMs = elapsedToEpochMillis(currentSample.timestampMs)
         launch(Dispatchers.IO) {
-            newGateIds.forEach { gateId ->
+            newGates.forEach { gate ->
+                val gateId = gate.id
+                val gateLabel = gate.name.ifBlank { "Gate ${gate.order}" }
                 val crossingEpochMs = ((prevEpochMs + currEpochMs) / 2L).coerceAtLeast(1L)
-                val result = regattaClient.sendClientCrossing(
+                when (val result = regattaClient.sendClientCrossing(
                     raceId = raceId,
                     boatId = boatId,
                     crossing = RegattaClientCrossingPayload(
                         gateId = gateId,
                         crossingEpochMillis = crossingEpochMs
                     )
-                )
-                if (result is NasCallResult.Ok) {
-                    regattaReportedGateCrossings = regattaReportedGateCrossings + gateId
-                } else {
-                    regattaPendingCrossings = regattaPendingCrossings + PendingRegattaCrossing(
-                        raceId = raceId,
-                        boatId = boatId,
-                        gateId = gateId,
-                        crossingEpochMillis = crossingEpochMs
-                    )
+                )) {
+                    is NasCallResult.Ok -> {
+                        regattaReportedGateCrossings = regattaReportedGateCrossings + gateId
+                    }
+                    is NasCallResult.Err -> {
+                        regattaPendingCrossings = regattaPendingCrossings + PendingRegattaCrossing(
+                            raceId = raceId,
+                            boatId = boatId,
+                            gateId = gateId,
+                            gateName = gateLabel,
+                            crossingEpochMillis = crossingEpochMs
+                        )
+                        regattaCrossingStatus = "Crossing send failed ($gateLabel): ${result.message}"
+                    }
                 }
             }
         }
@@ -1374,21 +1382,28 @@ fun StartLineScreen() {
             if (pending.isNotEmpty()) {
                 val stillPending = mutableListOf<PendingRegattaCrossing>()
                 pending.forEach { pc ->
-                    val cResult = regattaClient.sendClientCrossing(
+                    when (val cResult = regattaClient.sendClientCrossing(
                         raceId = pc.raceId,
                         boatId = pc.boatId,
                         crossing = RegattaClientCrossingPayload(
                             gateId = pc.gateId,
                             crossingEpochMillis = pc.crossingEpochMillis
                         )
-                    )
-                    if (cResult is NasCallResult.Ok) {
-                        regattaReportedGateCrossings = regattaReportedGateCrossings + pc.gateId
-                    } else {
-                        stillPending.add(pc)
+                    )) {
+                        is NasCallResult.Ok -> {
+                            regattaReportedGateCrossings = regattaReportedGateCrossings + pc.gateId
+                        }
+                        is NasCallResult.Err -> {
+                            stillPending.add(pc)
+                            val gateLabel = pc.gateName.ifBlank { pc.gateId }
+                            regattaCrossingStatus = "Crossing retry failed ($gateLabel): ${cResult.message}"
+                        }
                     }
                 }
                 regattaPendingCrossings = stillPending
+                if (stillPending.isEmpty()) {
+                    regattaCrossingStatus = null
+                }
             }
         }
     }
@@ -3770,6 +3785,15 @@ fun StartLineScreen() {
                                         fontWeight = FontWeight.SemiBold
                                     )
                                 }
+                                regattaCrossingStatus?.let { crossingStatus ->
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = crossingStatus,
+                                        color = Color(0xFFFFAB91),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
                             }
                         },
                         countdownDisplayText = raceCountdownDisplay,
@@ -3929,6 +3953,8 @@ fun StartLineScreen() {
                                 participants = raceMapParticipants,
                                 selectedBoatId = raceMapSelectedBoatId,
                                 selectedBoatTrack = raceMapSelectedBoatTrack,
+                                localBoatId = regattaPrefs.joinedBoatId,
+                                localBoatLocation = averagedRegattaLocation ?: currentLocation,
                                 fallbackCenter = averagedRegattaLocation ?: currentLocation,
                                 modifier = Modifier.fillMaxSize()
                             )
@@ -3948,6 +3974,8 @@ private fun JoinRaceMapView(
     participants: List<com.aloha.startline.regatta.RegattaParticipantLive>,
     selectedBoatId: String,
     selectedBoatTrack: List<com.aloha.startline.regatta.RegattaBoatTrackPoint>,
+    localBoatId: String,
+    localBoatLocation: Location?,
     fallbackCenter: Location?,
     modifier: Modifier = Modifier
 ) {
@@ -3956,8 +3984,9 @@ private fun JoinRaceMapView(
         participants,
         selectedBoatId
     ) { mutableStateOf(false) }
-    val visibleParticipants = participants.filter {
-        it.lastLatitude != null && it.lastLongitude != null
+    val visibleParticipants = participants.filter { participant ->
+        (participant.lastLatitude != null && participant.lastLongitude != null) ||
+            (participant.boatId == localBoatId && localBoatLocation != null)
     }
     val hasMapData = gates.isNotEmpty() || visibleParticipants.isNotEmpty() || selectedBoatTrack.isNotEmpty()
     Box(modifier = modifier) {
@@ -3977,6 +4006,7 @@ private fun JoinRaceMapView(
                 mapView.overlays.clear()
                 val fitPoints = mutableListOf<GeoPoint>()
                 val fallbackPoint = fallbackCenter?.let { GeoPoint(it.latitude, it.longitude) }
+                val localBoatPoint = localBoatLocation?.let { GeoPoint(it.latitude, it.longitude) }
 
                 gates.forEach { gate ->
                     val a = GeoPoint(gate.pointA.latitude, gate.pointA.longitude)
@@ -4014,9 +4044,12 @@ private fun JoinRaceMapView(
 
                 var selectedPoint: GeoPoint? = null
                 visibleParticipants.forEach { participant ->
-                    val lat = participant.lastLatitude ?: return@forEach
-                    val lon = participant.lastLongitude ?: return@forEach
-                    val point = GeoPoint(lat, lon)
+                    val point = when {
+                        participant.boatId == localBoatId && localBoatPoint != null -> localBoatPoint
+                        participant.lastLatitude != null && participant.lastLongitude != null ->
+                            GeoPoint(participant.lastLatitude, participant.lastLongitude)
+                        else -> return@forEach
+                    }
                     fitPoints += point
                     val selected = participant.boatId == selectedBoatId
                     if (selected) {
@@ -4159,6 +4192,7 @@ private const val REGATTA_TRACK_MOTION_LAG_SECONDS = 10L
 private const val REGATTA_LOCATION_AVERAGE_SECONDS = 2L
 private const val REGATTA_SIGNAL_INTERVAL_MS = 30_000L
 private const val REGATTA_CROSSING_MAX_DISTANCE_METERS = 15.0
+private const val REGATTA_MAX_CROSSING_STEP_METERS = 120.0
 private const val REGATTA_CROSSING_AVERAGE_WINDOW_MS = 2_000L
 private const val DEFAULT_ANCHOR_RADIUS_METERS = 35.0
 private const val MIN_ANCHOR_RADIUS_METERS = 1.0
@@ -4188,6 +4222,7 @@ private data class PendingRegattaCrossing(
     val raceId: String,
     val boatId: String,
     val gateId: String,
+    val gateName: String,
     val crossingEpochMillis: Long
 )
 private data class PendingStartSnapshot(
@@ -4503,6 +4538,8 @@ private fun detectGateCrossings(
     maxDistanceMeters: Double
 ): List<com.aloha.startline.regatta.RegattaGate> {
     if (gates.isEmpty()) return emptyList()
+    val movementDistanceMeters = previous.distanceTo(current).toDouble()
+    if (movementDistanceMeters > REGATTA_MAX_CROSSING_STEP_METERS) return emptyList()
     return gates.filter { gate ->
         if (gate.type.equals("start", ignoreCase = true)) {
             false
@@ -4518,10 +4555,47 @@ private fun detectGateCrossings(
             val prevInfo = distanceToStartLineInfo(previous, gateA, gateB)
             val currInfo = distanceToStartLineInfo(current, gateA, gateB)
             val oppositeSides = (prevInfo.signedDistanceMeters > 0.0) != (currInfo.signedDistanceMeters > 0.0)
-            val nearLine = prevInfo.distanceMeters <= maxDistanceMeters && currInfo.distanceMeters <= maxDistanceMeters
-            oppositeSides && nearLine
+            val nearLine = minOf(prevInfo.distanceMeters, currInfo.distanceMeters) <= maxDistanceMeters
+            val referenceLatitude = gateA.latitude
+            val prevPoint = projectToMeters(previous, referenceLatitude)
+            val currPoint = projectToMeters(current, referenceLatitude)
+            val gateStart = projectToMeters(gateA, referenceLatitude)
+            val gateEnd = projectToMeters(gateB, referenceLatitude)
+            val segmentIntersection = segmentsIntersect(prevPoint, currPoint, gateStart, gateEnd)
+            segmentIntersection || (oppositeSides && nearLine)
         }
     }
+}
+
+private fun segmentsIntersect(a1: Point2D, a2: Point2D, b1: Point2D, b2: Point2D): Boolean {
+    val o1 = orientation(a1, a2, b1)
+    val o2 = orientation(a1, a2, b2)
+    val o3 = orientation(b1, b2, a1)
+    val o4 = orientation(b1, b2, a2)
+    val epsilon = 1e-7
+
+    if (((o1 > epsilon && o2 < -epsilon) || (o1 < -epsilon && o2 > epsilon)) &&
+        ((o3 > epsilon && o4 < -epsilon) || (o3 < -epsilon && o4 > epsilon))
+    ) {
+        return true
+    }
+
+    if (kotlin.math.abs(o1) <= epsilon && onSegment(a1, b1, a2)) return true
+    if (kotlin.math.abs(o2) <= epsilon && onSegment(a1, b2, a2)) return true
+    if (kotlin.math.abs(o3) <= epsilon && onSegment(b1, a1, b2)) return true
+    if (kotlin.math.abs(o4) <= epsilon && onSegment(b1, a2, b2)) return true
+    return false
+}
+
+private fun orientation(p: Point2D, q: Point2D, r: Point2D): Double {
+    return (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y)
+}
+
+private fun onSegment(p: Point2D, q: Point2D, r: Point2D): Boolean {
+    return q.x <= maxOf(p.x, r.x) &&
+        q.x >= minOf(p.x, r.x) &&
+        q.y <= maxOf(p.y, r.y) &&
+        q.y >= minOf(p.y, r.y)
 }
 
 /** Prije nule: preostalo; na/poslije nule: proteklo od starta (00:00, 00:01, …). */
